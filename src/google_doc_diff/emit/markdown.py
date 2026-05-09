@@ -195,6 +195,8 @@ def _emit_heading(h: Heading, doc: Document, fn_ids: set) -> str:
 
 def _emit_paragraph(p: Paragraph, doc: Document, fn_ids: set) -> str:
     text = _emit_inline_runs(p.runs, doc, fn_ids)
+    if not text.strip() and not p.classes:
+        return ""
     if "gd-subtitle" in p.classes:
         return f"::: gd-subtitle\n{text}\n:::"
     if not p.classes:
@@ -272,14 +274,15 @@ def _cell_to_inline(cell, doc: Document, fn_ids: set) -> str:
     """
     parts: list[str] = []
     for blk in cell.blocks:
-        if isinstance(blk, Paragraph):
-            parts.append(_emit_inline_runs(blk.runs, doc, fn_ids))
-        elif isinstance(blk, Heading):
-            parts.append(_emit_inline_runs(blk.runs, doc, fn_ids))
+        if isinstance(blk, Paragraph | Heading):
+            text = _emit_inline_runs(blk.runs, doc, fn_ids)
+            if text.strip():
+                parts.append(text)
         else:
-            # Fall back to whatever the block emits, sans newlines
-            parts.append(_emit_block(blk, doc, fn_ids).replace("\n", " "))
-    return "<br>".join(p for p in parts if p) or "&nbsp;"
+            text = _emit_block(blk, doc, fn_ids).replace("\n", " ").strip()
+            if text:
+                parts.append(text)
+    return "<br>".join(parts) or "&nbsp;"
 
 
 def _emit_table_html(t: Table, doc: Document, fn_ids: set) -> str:

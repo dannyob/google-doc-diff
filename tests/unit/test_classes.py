@@ -52,15 +52,29 @@ def test_synthesize_inline_class_is_deterministic():
 
 
 def test_synthesize_inline_class_distinguishes_descriptors():
-    a = synthesize_inline_class(StyleDescriptor(bold=True))
-    b = synthesize_inline_class(StyleDescriptor(italic=True))
+    a = synthesize_inline_class(StyleDescriptor(font_family="Arial"))
+    b = synthesize_inline_class(StyleDescriptor(font_family="Helvetica"))
     assert a != b
 
 
 def test_synthesize_inline_class_collapses_identical_descriptors():
-    a = synthesize_inline_class(StyleDescriptor(bold=True, font_size_pt=14.0))
-    b = synthesize_inline_class(StyleDescriptor(bold=True, font_size_pt=14.0))
+    a = synthesize_inline_class(StyleDescriptor(font_size_pt=14.0))
+    b = synthesize_inline_class(StyleDescriptor(font_size_pt=14.0))
     assert a == b
+
+
+def test_synthesize_inline_class_returns_none_for_markdown_native_only():
+    """bold/italic/strike/links are encoded by Markdown markup natively,
+    so a descriptor containing only those should not synthesize a class."""
+    assert synthesize_inline_class(StyleDescriptor(bold=True)) is None
+    assert synthesize_inline_class(StyleDescriptor(italic=True)) is None
+    assert synthesize_inline_class(StyleDescriptor(bold=True, italic=True)) is None
+    assert synthesize_inline_class(StyleDescriptor(strikethrough=True)) is None
+    assert synthesize_inline_class(StyleDescriptor(link_url="http://x")) is None
+    # But adding a non-native field re-enables the class:
+    assert synthesize_inline_class(
+        StyleDescriptor(bold=True, font_family="Arial")
+    ) is not None
 
 
 def test_list_class_for_is_deterministic_and_short():

@@ -54,15 +54,33 @@ def is_default_for_named_style(named_style_type: str) -> bool:
     return named_style_type not in ALWAYS_CLASS_NAMED_STYLES
 
 
+_MARKDOWN_NATIVE_FIELDS = {
+    "bold", "italic", "strikethrough", "link_url", "link_anchor",
+}
+
+
+def _residual_descriptor(descriptor: StyleDescriptor) -> StyleDescriptor:
+    """Strip fields that markdown markup already encodes natively.
+
+    Avoids redundant `[**Strong**]{.gd-style-foo}` where `gd-style-foo` is
+    just `font-weight: 700` and the markdown `**...**` already handles it.
+    """
+    fields = asdict(descriptor)
+    for f in _MARKDOWN_NATIVE_FIELDS:
+        fields[f] = None
+    return StyleDescriptor(**fields)
+
+
 def synthesize_inline_class(descriptor: StyleDescriptor) -> str | None:
     """Synthesize a deterministic class for a non-default StyleDescriptor.
 
-    Returns None if the descriptor is empty (all fields None / falsy meaning
-    "no override"); the caller emits the bare element in that case.
+    Returns None if the descriptor's *residual* (after stripping fields
+    Markdown encodes natively: bold, italic, strike, links) is empty.
     """
-    if descriptor == StyleDescriptor():
+    residual = _residual_descriptor(descriptor)
+    if residual == StyleDescriptor():
         return None
-    blob = repr(sorted(asdict(descriptor).items()))
+    blob = repr(sorted(asdict(residual).items()))
     h = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:8]
     return f"gd-style-{h}"
 

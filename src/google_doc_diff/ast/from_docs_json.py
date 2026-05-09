@@ -250,8 +250,8 @@ class _DocBuilder:
             return [self._build_tab(t, level=0, parent_id=None) for t in tabs_data]
         body = self.docs_json.get("body", {})
         blocks = self._walk_structural_elements(body.get("content", []))
-        # Synthesize a single default tab.
-        return [Tab(tab_id="t-default", title="(default)", level=0, blocks=blocks)]
+        return [Tab(tab_id="t-default", title="(default)", level=0,
+                    blocks=_strip_leading_section_break(blocks))]
 
     def _build_tab(self, tab_data: dict, *, level: int, parent_id: str | None) -> Tab:
         props = tab_data.get("tabProperties", {})
@@ -259,7 +259,9 @@ class _DocBuilder:
         title = props.get("title", "")
         doc_tab = tab_data.get("documentTab", {})
         body = doc_tab.get("body", {})
-        blocks = self._walk_structural_elements(body.get("content", []))
+        blocks = _strip_leading_section_break(
+            self._walk_structural_elements(body.get("content", []))
+        )
         # Footnotes can live inside documentTab.footnotes
         for fid, fn in (doc_tab.get("footnotes") or {}).items():
             fn_id = "fn-" + fid
@@ -318,13 +320,13 @@ class _DocBuilder:
             anchor = ps.get("headingId")
             return Heading(
                 level=level,
-                runs=runs,
+                runs=_rstrip_runs(runs),
                 anchor_id=("h-" + anchor) if anchor else None,
             )
         if nst == "TITLE":
             return Heading(
                 level=1,
-                runs=runs,
+                runs=_rstrip_runs(runs),
                 anchor_id=None,
                 classes=[NAMED_STYLE_CLASSES["TITLE"]],
             )
@@ -525,3 +527,31 @@ class _DocBuilder:
 
 def _hash8(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:8]
+
+
+def _strip_leading_section_break(blocks: list) -> list:
+    """Drop a SectionBreak that appears as the first block of a tab/body.
+
+    Docs always emits a structural section break at the top of body content;
+    it conveys no semantic information and only adds noise to our output.
+    """
+    if blocks and isinstance(blocks[0], SectionBreak):
+        return blocks[1:]
+    return blocks
+
+
+def _rstrip_runs(runs: list) -> list:
+    """Strip trailing whitespace from the last text-bearing run."""
+    if not runs:
+        return runs
+    out = list(runs)
+    for i in range(len(out) - 1, -1, -1):
+        if isinstance(out[i], Run):
+            out[i] = Run(text=out[i].text.rstrip(), formatting=out[i].formatting)
+            if not out[i].text:
+                out.pop(i)
+                continue
+            break
+        # Non-Run inline node: stop trimming here.
+        break
+    return out

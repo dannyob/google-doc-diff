@@ -169,6 +169,8 @@ def _emit_heading(h: Heading, doc: Document) -> str:
 
 def _emit_paragraph(p: Paragraph, doc: Document) -> str:
     inner = _emit_inline_runs(p.runs, doc)
+    if not inner.strip() and not p.classes:
+        return ""
     attrs = _attr_block(None, p.classes)
     return f"<p{attrs}>{inner}</p>"
 
