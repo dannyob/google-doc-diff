@@ -12,7 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime  # noqa: F401  (used by Comment / Suggestion below)
 
-
 # --- Run + StyleDescriptor --------------------------------------------------
 
 
@@ -273,7 +272,7 @@ class Tab:
     title: str
     level: int                           # 0 = top-level
     parent_tab_id: str | None = None
-    children: list["Tab"] = field(default_factory=list)
+    children: list[Tab] = field(default_factory=list)
     blocks: list = field(default_factory=list)
 
 
@@ -290,9 +289,9 @@ class Document:
     comments_preserved: bool
     suggestions_preserved: bool
     tabs: list[Tab] = field(default_factory=list)
-    comments: dict[str, "Comment"] = field(default_factory=dict)
-    suggestions: dict[str, "Suggestion"] = field(default_factory=dict)
-    footnotes: dict[str, "Footnote"] = field(default_factory=dict)
+    comments: dict[str, Comment] = field(default_factory=dict)
+    suggestions: dict[str, Suggestion] = field(default_factory=dict)
+    footnotes: dict[str, Footnote] = field(default_factory=dict)
     # The next three are typed as dict[str, dict] in v1 (raw API blobs).
     # Tighten to typed dataclasses when classes.py / list emitter / image
     # extractor actually consume them.

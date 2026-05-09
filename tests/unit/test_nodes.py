@@ -1,7 +1,7 @@
 """Tests for AST node dataclasses."""
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -38,7 +38,6 @@ from google_doc_diff.ast.nodes import (
     TableOfContents,
     Unsupported,
 )
-
 
 # --- Run + StyleDescriptor --------------------------------------------------
 
@@ -167,7 +166,7 @@ def test_equation_block_holds_latex():
 
 
 def utc(year, month, day, hour=0, minute=0):
-    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 def test_comment_holds_thread_and_quoted_text():
