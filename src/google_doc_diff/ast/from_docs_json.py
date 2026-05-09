@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 
+from google_doc_diff.ast.anchor_comments import anchor_comments
 from google_doc_diff.ast.nodes import (
     Cell,
     Comment,
@@ -71,7 +72,7 @@ def build_document(
     builder = _DocBuilder(docs_json)
     tabs = builder.build_tabs()
 
-    return Document(
+    document = Document(
         doc_id=doc_id,
         title=title,
         revision_id=revision_id,
@@ -91,6 +92,7 @@ def build_document(
         inline_objects=docs_json.get("inlineObjects", {}),
         css_classes=builder.css_classes,
     )
+    return anchor_comments(document)
 
 
 # --- Comments (Drive Comments API) ---------------------------------------
