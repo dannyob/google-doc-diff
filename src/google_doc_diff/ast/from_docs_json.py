@@ -391,6 +391,10 @@ class _DocBuilder:
             ioe = el["inlineObjectElement"]
             obj_id = ioe.get("inlineObjectId", "")
             obj = (self.docs_json.get("inlineObjects") or {}).get(obj_id, {})
+            if not obj:
+                # Dangling inlineObjectElement: typically the decorative icon
+                # rendered next to a richLink/dateElement chip. Suppress.
+                return
             yield self._build_image(obj_id, obj)
             return
         if "person" in el:
@@ -404,13 +408,30 @@ class _DocBuilder:
         if "richLink" in el:
             rl = el["richLink"]
             props = rl.get("richLinkProperties", {})
+            mime_type = props.get("mimeType", "")
             yield SmartChip(
-                kind="richLink",
+                kind=_classify_rich_link(mime_type),
                 data={
                     "uri": props.get("uri", ""),
-                    "mime_type": props.get("mimeType", ""),
+                    "mime_type": mime_type,
+                    "rich_link_id": rl.get("richLinkId", ""),
                 },
                 display_text=props.get("title", ""),
+            )
+            return
+        if "dateElement" in el:
+            de = el["dateElement"]
+            props = de.get("dateElementProperties") or {}
+            yield SmartChip(
+                kind="date",
+                data={
+                    "date_id": de.get("dateId", ""),
+                    "timestamp": props.get("timestamp", ""),
+                    "date_format": props.get("dateFormat", ""),
+                    "time_format": props.get("timeFormat", ""),
+                    "locale": props.get("locale", ""),
+                },
+                display_text=props.get("displayText") or props.get("timestamp", ""),
             )
             return
         if "horizontalRule" in el:
@@ -519,6 +540,30 @@ class _DocBuilder:
             width_px=width_px,
             height_px=height_px,
         )
+
+
+# --- richLink classification ---------------------------------------------
+
+# Map Google's MIME types for in-doc rich links to a stable kind suffix that
+# downstream stylesheets / consumers can branch on.
+_RICH_LINK_KINDS: dict[str, str] = {
+    "application/vnd.google-apps.kix":          "richlink-doc",
+    "application/vnd.google-apps.document":     "richlink-doc",
+    "application/vnd.google-apps.ritz":         "richlink-spreadsheet",
+    "application/vnd.google-apps.spreadsheet":  "richlink-spreadsheet",
+    "application/vnd.google-apps.punch":        "richlink-slides",
+    "application/vnd.google-apps.presentation": "richlink-slides",
+    "application/vnd.google-apps.folder":       "richlink-folder",
+    "application/vnd.google-apps.form":         "richlink-form",
+    "application/vnd.google-apps.drawing":      "richlink-drawing",
+    "application/vnd.google-apps.script":       "richlink-script",
+    "application/vnd.google-apps.site":         "richlink-site",
+    "application/vnd.google-apps.video":        "richlink-video",
+}
+
+
+def _classify_rich_link(mime_type: str) -> str:
+    return _RICH_LINK_KINDS.get(mime_type, "richlink")
 
 
 # --- chip glyph translation -----------------------------------------------

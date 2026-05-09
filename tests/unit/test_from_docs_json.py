@@ -290,6 +290,109 @@ def test_drive_url_computed_when_missing():
     assert doc.drive_url == "https://docs.google.com/document/d/DOCID/edit"
 
 
+def test_date_chip_extracted_with_display_text():
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "body": {"content": [{"paragraph": {
+            "elements": [
+                {"textRun": {"content": "Meeting: "}},
+                {"dateElement": {
+                    "dateId": "kix.dt1",
+                    "dateElementProperties": {
+                        "timestamp": "2026-04-30T12:00:00Z",
+                        "locale": "en",
+                        "dateFormat": "DATE_FORMAT_MONTH_DAY_YEAR_ABBREVIATED",
+                        "timeFormat": "TIME_FORMAT_DISABLED",
+                        "displayText": "Apr 30, 2026",
+                    }}},
+            ],
+        }}]},
+    }
+    doc = build_document(j)
+    runs = doc.tabs[0].blocks[0].runs
+    chip = next(r for r in runs if hasattr(r, "kind") and r.kind == "date")
+    assert chip.display_text == "Apr 30, 2026"
+    assert chip.data["timestamp"] == "2026-04-30T12:00:00Z"
+    assert chip.data["date_id"] == "kix.dt1"
+
+
+def test_rich_link_classified_by_mime_type():
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "body": {"content": [{"paragraph": {
+            "elements": [
+                {"richLink": {
+                    "richLinkId": "kix.rl1",
+                    "richLinkProperties": {
+                        "title": "My Folder",
+                        "uri": "https://drive.google.com/drive/u/0/folders/abc",
+                        "mimeType": "application/vnd.google-apps.folder",
+                    }}},
+                {"richLink": {
+                    "richLinkId": "kix.rl2",
+                    "richLinkProperties": {
+                        "title": "Sheet",
+                        "uri": "https://docs.google.com/spreadsheets/d/x",
+                        "mimeType": "application/vnd.google-apps.spreadsheet",
+                    }}},
+                {"richLink": {
+                    "richLinkId": "kix.rl3",
+                    "richLinkProperties": {
+                        "title": "Doc",
+                        "uri": "https://docs.google.com/document/d/y",
+                        "mimeType": "application/vnd.google-apps.kix",
+                    }}},
+            ],
+        }}]},
+    }
+    doc = build_document(j)
+    runs = doc.tabs[0].blocks[0].runs
+    kinds = [r.kind for r in runs if hasattr(r, "kind")]
+    assert "richlink-folder" in kinds
+    assert "richlink-spreadsheet" in kinds
+    assert "richlink-doc" in kinds
+
+
+def test_unknown_rich_link_mime_falls_back_to_generic_kind():
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "body": {"content": [{"paragraph": {
+            "elements": [{"richLink": {
+                "richLinkId": "kix.rl",
+                "richLinkProperties": {
+                    "title": "Mystery",
+                    "uri": "https://example.com",
+                    "mimeType": "application/x-something-new",
+                }}}],
+        }}]},
+    }
+    doc = build_document(j)
+    chip = doc.tabs[0].blocks[0].runs[0]
+    assert chip.kind == "richlink"
+
+
+def test_dangling_inline_object_element_is_suppressed():
+    """When an inlineObjectElement points to no inlineObject (decorative chip
+    icon), it should be dropped from the AST, not crash or emit a broken
+    image."""
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "inlineObjects": {},   # empty — no real objects
+        "body": {"content": [{"paragraph": {
+            "elements": [
+                {"textRun": {"content": "Before "}},
+                {"inlineObjectElement": {"inlineObjectId": "nope"}},
+                {"textRun": {"content": "after"}},
+            ],
+        }}]},
+    }
+    doc = build_document(j)
+    runs = doc.tabs[0].blocks[0].runs
+    assert all(not isinstance(r, type(None)) for r in runs)
+    text = "".join(r.text for r in runs if hasattr(r, "text"))
+    assert text == "Before after"
+
+
 def test_captured_at_defaults_to_now():
     before = datetime.now(UTC)
     doc = build_document(_docs_json_minimal())
