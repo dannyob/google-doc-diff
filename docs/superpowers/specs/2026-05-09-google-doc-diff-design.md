@@ -314,7 +314,8 @@ source_mode: pull              # one of: pull | replay
 - `source_mode` — `pull` for current/specific-revision pulls, `replay` for
   files emitted by the replay event walker. Read by `gdoc diff` to warn the
   user when comparing a `pull` artifact against a `replay` artifact (the
-  diff will be misleadingly large because `replay` strips suggestions).
+  diff will be misleadingly large because `replay` strips suggestions). The
+  warning is informational and does not affect the diff exit code.
 - `comments_preserved` / `suggestions_preserved` — read by `diff` (warns on
   mismatched values), by `replay` (refuses to overwrite a `pull` artifact
   with a `replay` one in non-empty target paths without `--force`), and by
@@ -393,7 +394,7 @@ gdoc replay <doc-id-or-url> --since ISO [--until ISO]
                             [--out PATH] [--extract-assets]
                             [--commit] [--squash-by-author DURATION]
                             [--include-comments | --no-include-comments]
-                            [--dry-run] [--resume]
+                            [--dry-run] [--resume | --restart]
     Walk revisions + comment events, merge into one chronological timeline,
     write the .md for each event. With --commit, create one git commit per
     event in the cwd, authored by the event's user with the event's timestamp.
@@ -479,7 +480,7 @@ Phase 2: build a unified event timeline:
 |---|---|---|---|
 | `prose_change` | revision | `lastModifyingUser` | `modifiedDate` |
 | `comment_create` | comment | `author` | `createdTime` |
-| `comment_edit` | comment (modifiedTime ≠ createdTime) | `author` | `modifiedTime` |
+| `comment_edit` | comment (modifiedTime ≠ createdTime); event carries the post-edit body so the AST snapshot reflects the new text | `author` | `modifiedTime` |
 | `comment_delete` | comment (`deleted=true`) | `author` | `modifiedTime` |
 | `reply_create` | reply | `author` | `createdTime` |
 | `reply_resolve` | reply (`action=resolve`) | `author` | `createdTime` |
