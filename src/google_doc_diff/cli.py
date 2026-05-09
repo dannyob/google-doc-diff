@@ -89,7 +89,9 @@ def auth_status_cmd():
 @click.option("--extract-assets", is_flag=True,
               help="Download images into <slug>.assets/ and rewrite links.")
 @click.option("--revision", help="Pull a specific revision id (Drive v2).")
-def pull(doc, out, html_out, extract_assets, revision):
+@click.option("--chip-counts/--no-chip-counts", default=True,
+              help="Recover voting/reaction chip counts via an extra markdown export call.")
+def pull(doc, out, html_out, extract_assets, revision, chip_counts):
     """Pull a Google Doc and write Markdown (and optionally HTML)."""
     doc_id = parse_doc_id(doc)
     try:
@@ -112,6 +114,18 @@ def pull(doc, out, html_out, extract_assets, revision):
         sys.exit(2)
 
     document = build_document(docs_json, comments_json)
+
+    if chip_counts:
+        from google_doc_diff.ast.chip_counts import attach_counts_to_chips
+        try:
+            revs = api.list_revisions(doc_id)
+            md_url = ((revs[-1] if revs else {}).get("exportLinks") or {}).get("text/markdown")
+            if md_url:
+                exported_md = api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
+                attach_counts_to_chips(document, exported_md)
+        except Exception as e:
+            click.echo(f"warning: chip-count recovery failed: {e}", err=True)
+
     md = emit_document_md(document)
 
     out_path = out or Path(_slugify(document.title) + ".md")

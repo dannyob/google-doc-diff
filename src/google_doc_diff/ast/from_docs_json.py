@@ -440,9 +440,8 @@ class _DocBuilder:
         style_dict = _text_style_to_descriptor_dict(ts)
         descriptor = _descriptor_from_dict(style_dict)
 
-        # Derive the parent named style for this paragraph isn't known here;
-        # synthesize an inline-override class from the descriptor and register
-        # it in css_classes so the emitter can render the corresponding rule.
+        # Synthesize an inline-override class from the descriptor and
+        # register it in css_classes so the emitter can render the rule.
         cls = synthesize_inline_class(descriptor)
         if cls and cls not in self.css_classes:
             from google_doc_diff.styles.css import descriptor_to_css
@@ -450,34 +449,32 @@ class _DocBuilder:
             if body:
                 self.css_classes[cls] = body
 
-        # Newlines: Docs textRuns can carry trailing "\n" for paragraph
-        # boundaries. Strip the structural newline; LineBreak is a separate
-        # element type.
+        # Newlines: Docs textRuns carry trailing "\n" for paragraph boundaries.
         text = content.rstrip("\n")
         if not text:
-            # Pure-newline run inside a paragraph: emit nothing.
             return
 
-        run = Run(text=text, formatting=descriptor)
-
-        # Suggestion wrapping: textRun may carry suggestedInsertionIds /
-        # suggestedDeletionIds (lists of suggestion IDs). For v1, if there's
-        # an insertion suggestion for the current text, wrap the run in
-        # SuggestionIns; if a deletion suggestion exists for it, wrap in
-        # SuggestionDel.
+        # Suggestion wrapping (handled at run granularity).
         sugg_ins_ids = tr.get("suggestedInsertionIds") or []
         sugg_del_ids = tr.get("suggestedDeletionIds") or []
+        wrapper: type | None = None
+        wrapper_sid: str | None = None
         if sugg_ins_ids:
-            sid = sugg_ins_ids[0]
-            self._record_suggestion(sid, "insertion", tr)
-            yield SuggestionIns(suggestion_id=sid, runs=[run])
-            return
-        if sugg_del_ids:
-            sid = sugg_del_ids[0]
-            self._record_suggestion(sid, "deletion", tr)
-            yield SuggestionDel(suggestion_id=sid, runs=[run])
-            return
-        yield run
+            wrapper, wrapper_sid = SuggestionIns, sugg_ins_ids[0]
+            self._record_suggestion(wrapper_sid, "insertion", tr)
+        elif sugg_del_ids:
+            wrapper, wrapper_sid = SuggestionDel, sugg_del_ids[0]
+            self._record_suggestion(wrapper_sid, "deletion", tr)
+
+        # Split on chip glyphs: Docs encodes voting / reaction chips as
+        # Private Use Area codepoints inline within the textRun content
+        # (no separate API representation). Split into Run + SmartChip + Run
+        # so chips render as recognizable spans rather than invisible glyphs.
+        nodes = _split_chips(text, descriptor)
+        if wrapper is not None:
+            yield wrapper(suggestion_id=wrapper_sid, runs=nodes)
+        else:
+            yield from nodes
 
     def _record_suggestion(self, sid: str, kind: str, _source: dict) -> None:
         if sid in self.suggestions:
@@ -522,6 +519,39 @@ class _DocBuilder:
             width_px=width_px,
             height_px=height_px,
         )
+
+
+# --- chip glyph translation -----------------------------------------------
+
+# Docs encodes some inline UI widgets (voting chips, reactions) as Private
+# Use Area codepoints within textRun content. Map known glyphs to a
+# (chip-kind, visible-text) pair; everything else in the PUA range falls
+# back to a generic "unknown chip" marker.
+_CHIP_GLYPHS: dict[str, tuple[str, str]] = {
+    "": ("vote-thumbsup", "➕"),
+}
+
+
+def _split_chips(text: str, descriptor: StyleDescriptor) -> list:
+    """Split text on chip glyphs into a sequence of Runs and SmartChips."""
+    out: list = []
+    buf = ""
+    for ch in text:
+        if ch in _CHIP_GLYPHS or 0xE000 <= ord(ch) <= 0xF8FF:
+            if buf:
+                out.append(Run(text=buf, formatting=descriptor))
+                buf = ""
+            kind, visible = _CHIP_GLYPHS.get(ch, ("unknown", f"U+{ord(ch):04X}"))
+            out.append(SmartChip(
+                kind=kind,
+                data={"glyph": f"U+{ord(ch):04X}"},
+                display_text=visible,
+            ))
+        else:
+            buf += ch
+    if buf:
+        out.append(Run(text=buf, formatting=descriptor))
+    return out
 
 
 # --- helpers (also used by tests) ---------------------------------------
