@@ -160,6 +160,166 @@ def revisions(doc, fmt):
         click.echo(f"{r['id']:<12} {r.get('modifiedDate', '-'):<26} {user}")
 
 
+# --- replay --------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("doc")
+@click.option("--since", help="ISO timestamp; only events at or after this time.")
+@click.option("--until", help="ISO timestamp; only events at or before this time.")
+@click.option("--out", type=click.Path(path_type=Path),
+              help="Output Markdown path overwritten on each event.")
+@click.option("--commit", is_flag=True,
+              help="Create one git commit per event in the cwd.")
+@click.option("--squash-by-author", default=None,
+              help="Coalesce adjacent same-author prose events within DURATION (e.g. 5m, 2h).")
+@click.option("--include-comments/--no-include-comments", default=True,
+              help="Reconstruct comment state at each event from Drive Comments API.")
+@click.option("--dry-run", is_flag=True,
+              help="Walk the timeline; print events but don't write or commit.")
+@click.option("--resume", is_flag=True,
+              help="Continue an interrupted replay (.gdoc-replay-state.json).")
+@click.option("--restart", is_flag=True,
+              help="Discard any existing replay state and start over.")
+def replay(doc, since, until, out, commit, squash_by_author, include_comments,
+           dry_run, resume, restart):
+    """Walk revisions + comment events and emit one .md (and optional commit) per event."""
+    from datetime import datetime as _dt
+
+    from google_doc_diff.replay import git as gitwrap
+    from google_doc_diff.replay.runner import ReplayRunner, RunnerOptions
+    from google_doc_diff.replay.state import (
+        EventState,
+        ReplayState,
+        read_state,
+        remove_state,
+        write_state,
+    )
+    from google_doc_diff.replay.timeline import (
+        build_timeline,
+        event_to_state_dict,
+        timeline_hash,
+    )
+
+    doc_id = parse_doc_id(doc)
+    cwd = Path.cwd()
+
+    existing = read_state(cwd)
+    if existing and not (resume or restart):
+        click.echo(
+            f"{cwd}/.gdoc-replay-state.json exists. Use --resume to continue "
+            "or --restart to discard.",
+            err=True,
+        )
+        sys.exit(2)
+    if restart:
+        remove_state(cwd)
+        existing = None
+
+    try:
+        creds = load_credentials()
+    except AuthError as e:
+        click.echo(f"auth: {e}", err=True)
+        sys.exit(2)
+    api = GdocAPI(creds)
+
+    revisions = api.list_revisions(doc_id)
+    comments = api.list_comments(doc_id) if include_comments else []
+
+    since_dt = _dt.fromisoformat(since) if since else None
+    until_dt = _dt.fromisoformat(until) if until else None
+    squash = _parse_duration(squash_by_author) if squash_by_author else None
+
+    events = build_timeline(
+        revisions, comments,
+        since=since_dt, until=until_dt, squash_by_author=squash,
+    )
+    new_hash = timeline_hash(events)
+
+    if existing and resume:
+        if existing.timeline_hash != new_hash:
+            click.echo(
+                "Timeline hash mismatch (revisions or comments changed since "
+                "the interrupted run). Pass --restart to discard, or revert "
+                "the upstream changes.",
+                err=True,
+            )
+            sys.exit(2)
+
+    out_path = out or Path(_slugify(doc_id) + ".md")
+
+    if commit:
+        if not gitwrap.is_clean(cwd):
+            click.echo("git working tree is dirty; commit or stash first.", err=True)
+            sys.exit(2)
+
+    if dry_run:
+        for ev in events:
+            click.echo(
+                f"{ev.timestamp.isoformat()}  {ev.kind:<14} "
+                f"{(ev.revision_id or ev.comment_id or '-'):<26} {ev.author}"
+            )
+        return
+
+    # Build / reuse state file.
+    if existing and resume:
+        state = existing
+    else:
+        state = ReplayState(
+            doc_id=doc_id, out_path=str(out_path),
+            extract_assets=False, include_comments=include_comments,
+            since=since, until=until,
+            timeline_hash=new_hash,
+            events=[EventState(**event_to_state_dict(e)) for e in events],
+        )
+        write_state(state, cwd)
+
+    runner = ReplayRunner(api, doc_id, RunnerOptions(
+        out_path=out_path, commit=commit, cwd=cwd,
+        include_comments=include_comments,
+    ))
+
+    # Resume: skip events already committed.
+    pending: list = []
+    pending_states: list[EventState] = []
+    for ev, est in zip(events, state.events, strict=True):
+        if est.status == "committed":
+            continue
+        pending.append(ev)
+        pending_states.append(est)
+
+    def _on_event(ev, sha):
+        for est in state.events:
+            if est.id == ev.event_id and est.status != "committed":
+                est.status = "committed"
+                est.git_sha = sha
+                break
+        write_state(state, cwd)
+        click.echo(f"  {ev.kind:<14} {ev.timestamp.isoformat()}  {sha or '(no commit)'}")
+
+    runner.execute(pending, on_event=_on_event)
+    click.echo(f"replayed {len(pending)} event(s); state: {cwd}/.gdoc-replay-state.json")
+
+
+def _parse_duration(s: str):
+    """Accept Go-style duration: 5m, 300s, 1h, 2h30m. Returns timedelta."""
+    from datetime import timedelta as _td
+    pattern = re.compile(r"(\d+)([smh])")
+    matches = pattern.findall(s)
+    if not matches:
+        raise click.BadParameter(f"unrecognized duration: {s!r}")
+    total = 0.0
+    for n, unit in matches:
+        n = int(n)
+        if unit == "s":
+            total += n
+        elif unit == "m":
+            total += n * 60
+        elif unit == "h":
+            total += n * 3600
+    return _td(seconds=total)
+
+
 # --- diff ----------------------------------------------------------------
 
 
