@@ -51,7 +51,7 @@ def _try_anchor_in_tabs(tabs: list[Tab], cmt: Comment) -> bool:
 
 
 def _try_anchor_in_blocks(blocks: list, cmt: Comment) -> bool:
-    for i, block in enumerate(blocks):
+    for block in blocks:
         if isinstance(block, Paragraph | Heading | ListItem):
             new_runs = _wrap_in_runs(block.runs, cmt)
             if new_runs is not None:
