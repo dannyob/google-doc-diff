@@ -523,29 +523,27 @@ class _DocBuilder:
 
 # --- chip glyph translation -----------------------------------------------
 
-# Docs encodes some inline UI widgets (voting chips, reactions) as Private
-# Use Area codepoints within textRun content. Map known glyphs to a
-# (chip-kind, visible-text) pair; everything else in the PUA range falls
-# back to a generic "unknown chip" marker.
-_CHIP_GLYPHS: dict[str, tuple[str, str]] = {
-    "": ("vote-thumbsup", "➕"),
-}
+# Docs encodes inline UI widgets (voting chips, reactions, etc.) as a single
+# Private Use Area codepoint (U+E907) inside textRun.content — the actual
+# emoji + count for each chip live ONLY in Drive's rendered markdown export,
+# not in the Docs API JSON. We emit a placeholder SmartChip(kind='reaction')
+# at the JSON-build stage and let chip_counts.attach_counts_to_chips fill in
+# the emoji + count via the markdown cross-reference.
 
 
 def _split_chips(text: str, descriptor: StyleDescriptor) -> list:
-    """Split text on chip glyphs into a sequence of Runs and SmartChips."""
+    """Split text on PUA chip glyphs into a sequence of Runs and SmartChips."""
     out: list = []
     buf = ""
     for ch in text:
-        if ch in _CHIP_GLYPHS or 0xE000 <= ord(ch) <= 0xF8FF:
+        if 0xE000 <= ord(ch) <= 0xF8FF:
             if buf:
                 out.append(Run(text=buf, formatting=descriptor))
                 buf = ""
-            kind, visible = _CHIP_GLYPHS.get(ch, ("unknown", f"U+{ord(ch):04X}"))
             out.append(SmartChip(
-                kind=kind,
+                kind="reaction",
                 data={"glyph": f"U+{ord(ch):04X}"},
-                display_text=visible,
+                display_text="?",   # filled in by the chip_counts pass
             ))
         else:
             buf += ch

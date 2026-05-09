@@ -1,10 +1,11 @@
-"""Tests for ast/chip_counts.py."""
+"""Tests for ast/chip_counts.py — context-aware widget rendering recovery."""
 
 from datetime import UTC, datetime
 
 from google_doc_diff.ast.chip_counts import (
-    attach_counts_to_chips,
-    extract_counts_from_markdown,
+    _classify,
+    _parse_chip_rendering,
+    attach_widget_renderings,
 )
 from google_doc_diff.ast.nodes import (
     Document,
@@ -19,57 +20,92 @@ def utc(*args):
     return datetime(*args, tzinfo=UTC)
 
 
-def test_extract_counts_finds_thumbsup():
-    md = "First idea(➕ 3) was good\nSecond(➕ 1)"
-    pairs = extract_counts_from_markdown(md)
-    assert pairs == [("vote-thumbsup", 3), ("vote-thumbsup", 1)]
-
-
-def test_extract_counts_handles_pandoc_escaped_paren():
-    md = "Idea(➕ 5\\)\n"
-    pairs = extract_counts_from_markdown(md)
-    assert pairs == [("vote-thumbsup", 5)]
-
-
-def test_extract_counts_thumbsdown_too():
-    md = "Up(➕ 2) and down(➖ 1)"
-    pairs = extract_counts_from_markdown(md)
-    assert pairs == [("vote-thumbsup", 2), ("vote-thumbsdown", 1)]
-
-
-def test_attach_counts_in_document_order():
-    chip1 = SmartChip(kind="vote-thumbsup", data={"glyph": "U+E907"}, display_text="➕")
-    chip2 = SmartChip(kind="vote-thumbsup", data={"glyph": "U+E907"}, display_text="➕")
-    doc = Document(
+def make_doc(blocks):
+    return Document(
         doc_id="X", title="T", revision_id="r", drive_url="u",
         captured_at=utc(2026, 1, 1), schema_version=1, last_modifying_user=None,
         source_mode="pull", comments_preserved=True, suggestions_preserved=True,
-        tabs=[Tab(tab_id="t", title="(default)", level=0, blocks=[
-            Paragraph(runs=[Run(text="A "), chip1]),
-            Paragraph(runs=[Run(text="B "), chip2]),
-        ])],
+        tabs=[Tab(tab_id="t", title="(default)", level=0, blocks=blocks)],
     )
-    md = "A (➕ 3)\nB (➕ 7)"
-    n = attach_counts_to_chips(doc, md)
-    assert n == 2
-    assert chip1.data["count"] == 3
-    assert chip2.data["count"] == 7
-    assert chip1.display_text == "➕ 3"
 
 
-def test_attach_counts_with_mismatched_lengths_attaches_what_it_can():
-    chip1 = SmartChip(kind="vote-thumbsup", data={"glyph": "U+E907"}, display_text="➕")
-    chip2 = SmartChip(kind="vote-thumbsup", data={"glyph": "U+E907"}, display_text="➕")
-    doc = Document(
-        doc_id="X", title="T", revision_id="r", drive_url="u",
-        captured_at=utc(2026, 1, 1), schema_version=1, last_modifying_user=None,
-        source_mode="pull", comments_preserved=True, suggestions_preserved=True,
-        tabs=[Tab(tab_id="t", title="(default)", level=0, blocks=[
-            Paragraph(runs=[chip1, chip2]),
-        ])],
-    )
-    md = "(➕ 9)"
-    n = attach_counts_to_chips(doc, md)
+def widget(glyph_hex="U+E907"):
+    return SmartChip(kind="reaction", data={"glyph": glyph_hex}, display_text="?")
+
+
+def test_parse_chip_rendering_thumbsup():
+    assert _parse_chip_rendering("(➕ 3)") == ("➕", 3)
+    assert _parse_chip_rendering("(➕ 5\\)") == ("➕", 5)
+    assert _parse_chip_rendering("not a chip") == (None, None)
+
+
+def test_classify_vote_kinds():
+    assert _classify("(➕ 1)", "➕") == "vote-thumbsup"
+    assert _classify("(❤️ 0)", "❤️") == "reaction-heart"
+    assert _classify("(🚀 5)", "🚀") == "reaction-rocket"
+
+
+def test_classify_non_vote_widgets():
+    assert _classify("Standard White (#FFFFFF)", None) == "dropdown-color"
+    assert _classify("widget", None) == "widget"
+
+
+def test_attach_pairs_chip_using_preceding_text():
+    """Widget after 'idea ' in markdown should be paired by surrounding text,
+    not by document-order position."""
+    chip = widget()
+    doc = make_doc([
+        Paragraph(runs=[Run(text="An interesting idea "), chip]),
+    ])
+    md = "An interesting idea (➕ 3)\n"
+    n = attach_widget_renderings(doc, md)
     assert n == 1
-    assert chip1.data["count"] == 9
-    assert "count" not in chip2.data
+    assert chip.data["count"] == 3
+    assert chip.data["emoji"] == "➕"
+    assert chip.kind == "vote-thumbsup"
+    assert chip.display_text == "(➕ 3)"
+
+
+def test_attach_handles_dropdown_widgets():
+    """Widget that renders as dropdown text (not a vote pattern) is captured
+    too — kind is set heuristically and display_text is the rendered string."""
+    chip = widget()
+    doc = make_doc([
+        Paragraph(runs=[Run(text="Background: "), chip]),
+    ])
+    md = "Background: Standard White (#FFFFFF)\n"
+    n = attach_widget_renderings(doc, md)
+    assert n == 1
+    assert chip.display_text == "Standard White (#FFFFFF)"
+    assert chip.kind == "dropdown-color"
+    assert "count" not in chip.data
+    assert "emoji" not in chip.data
+
+
+def test_attach_skips_when_preceding_text_not_in_markdown():
+    chip = widget()
+    doc = make_doc([
+        Paragraph(runs=[Run(text="Some text "), chip]),
+    ])
+    md = "Completely different content"
+    n = attach_widget_renderings(doc, md)
+    assert n == 0
+    assert chip.kind == "reaction"   # unchanged
+    assert chip.display_text == "?"
+
+
+def test_attach_paginates_through_repeated_preceding_text():
+    """Two chips after the same preceding word get paired with two distinct
+    renderings in the markdown (the per-call _seen_positions cache prevents
+    both from latching onto the first match)."""
+    c1 = widget()
+    c2 = widget()
+    doc = make_doc([
+        Paragraph(runs=[Run(text="Vote: "), c1]),
+        Paragraph(runs=[Run(text="Vote: "), c2]),
+    ])
+    md = "Vote: (➕ 3)\nVote: (❤️ 1)\n"
+    n = attach_widget_renderings(doc, md)
+    assert n == 2
+    assert c1.data["emoji"] == "➕" and c1.data["count"] == 3
+    assert c2.data["emoji"] == "❤️" and c2.data["count"] == 1
