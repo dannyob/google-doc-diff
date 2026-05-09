@@ -1296,3 +1296,326 @@ git commit -m "add AGPL-3.0-or-later license and project metadata"
 ---
 
 End of Chunk 1. After this chunk: full AST tree exists as plain dataclasses, no I/O code yet, all unit tests pass, project is committable. Next chunk wires up the styles → Markdown emitter pipeline against handcrafted ASTs.
+
+---
+
+## Chunk 2: Styles + Markdown emitter
+
+Goal: a CSS-class generator + a Markdown serializer that round-trip-readiness-tests pass on handcrafted ASTs covering all node types. No I/O yet — the emitter takes a `Document`, returns a string.
+
+### Task 2.1: `styles/classes.py` — class name derivation
+
+**Files:** `src/google_doc_diff/styles/classes.py`, `tests/unit/test_classes.py`
+
+Functions:
+- `named_paragraph_class(named_style_type: str) -> str` — maps `HEADING_1`→`gd-heading-1`, `TITLE`→`gd-title`, etc.
+- `synthesize_inline_class(descriptor: StyleDescriptor) -> str | None` — returns `gd-style-{hash8}` from `hashlib.sha256(repr(descriptor).encode()).hexdigest()[:8]`; returns `None` for an empty descriptor (no class needed).
+- `list_class_for(list_id: str) -> str` — `gd-list-{first 4 hex chars of sha256}`.
+
+Tests assert: stable class names across calls (determinism), empty descriptor → no class, two distinct descriptors → distinct hashes (collision check skipped for now), full set of named-style types covered.
+
+**TDD steps per @superpowers:test-driven-development**: write the failing test, run, implement, run, commit. One commit per function.
+
+### Task 2.2: `styles/css.py` — CSS rule generation
+
+**Files:** `src/google_doc_diff/styles/css.py`, `tests/unit/test_css.py`
+
+Functions:
+- `descriptor_to_css(d: StyleDescriptor) -> str` — generates `font-weight: 700; color: #...; ...` body content from a StyleDescriptor.
+- `paired_named_rule(tag: str, class_name: str, body: str) -> str` — generates `tag, .class { body }`.
+- `build_css(doc: Document) -> str` — walks `doc.css_classes` plus the named-style table (Heading 1..6, Title, Subtitle, Normal) and returns one combined `<style>`-ready string.
+
+Tests assert: `bold=True` → `font-weight: 700`, font/size/color emit correctly, missing fields are omitted entirely (not `font-family: None`).
+
+### Task 2.3: `emit/markdown.py` — basic blocks (headings, paragraphs, lists)
+
+**Files:** `src/google_doc_diff/emit/markdown.py`, `tests/unit/test_emit_md_blocks.py`
+
+Functions:
+- `emit_paragraph(p: Paragraph, doc: Document) -> str`
+- `emit_heading(h: Heading, doc: Document) -> str` — `# foo` (bare) unless `h.classes` non-empty, then `# foo {.class1 .class2}`.
+- `emit_list(items: list[ListItem], doc: Document) -> str` — collapse adjacent same-list_id items; `- ` for bulleted, `1. ` for ordered (Pandoc auto-numbers).
+- `emit_run(r: Run, doc: Document) -> str` — text with **bold**, *italic*, ~~strike~~, `code`, [link](url), bracketed-span `[text]{.gd-style-XX}` for inline overrides.
+
+Tests use handcrafted ASTs.
+
+### Task 2.4: `emit/markdown.py` — tables
+
+Add `emit_table(t: Table, doc: Document) -> str`.
+
+Try Pandoc pipe table first; if any cell has `colspan>1` or `rowspan>1`, render the whole table as raw HTML.
+
+Tests cover both code paths.
+
+### Task 2.5: `emit/markdown.py` — tabs, frontmatter, document root
+
+Add:
+- `emit_tab(t: Tab, doc: Document, depth: int = 0) -> str` — `:::` count = `3 + depth`.
+- `emit_frontmatter(doc: Document) -> str` — YAML block with all fields from spec.
+- `emit_document(doc: Document) -> str` — frontmatter + `<style>` raw HTML block + tab fenced divs.
+
+When a doc has exactly one synthesized tab and that tab has no title (or title is "(default)"), the emitter SKIPS the tab fenced div and emits blocks directly. Single-tab docs stay clean.
+
+Tests cover: multi-tab, single-tab degenerate, nested tabs (depth 2).
+
+### Task 2.6: `emit/markdown.py` — comments + suggestions + footnotes
+
+Add the comment / suggestion / footnote handling per the spec:
+
+- Inline comment anchors: short comments (single-graf, no replies) → `^[…]` inline note. Longer / threaded → reference-style `[^c-…]` with definition placed at end of containing tab (or end of doc).
+- Suggestions: `{++…++}[^s-…]` and `{--…--}[^s-…]`. Replacement (paired ins+del with same suggestion_id at adjacent positions) → `{~~old~>new~~}[^s-…]`.
+- Footnotes: `[^fn-…]` with body emitted at end of containing tab.
+
+Footnote definitions are sorted alphabetically by ID for determinism.
+
+Tests cover each form.
+
+### Task 2.7: Structural attribute audit
+
+**Files:** `src/google_doc_diff/emit/audit.py`, `tests/round_trip/test_md_audit.py`
+
+`audit_md_output(ast: Document, md: str) -> list[str]` — walks the AST, returns a list of missing-attribute violations. Empty list = pass.
+
+Checks: every `comment_id`, `suggestion_id`, `footnote_id`, `tab_id`, `bookmark_id`, `image_id`, every synthesized class, every named-style class on Title/Subtitle/etc. appears in the markdown output.
+
+Tests: build a fixture-rich AST, emit MD, audit returns `[]`. Build the same AST minus a comment ID, audit returns `["missing comment_id c-XYZ"]`.
+
+### Task 2.8: Determinism test
+
+`tests/round_trip/test_md_determinism.py` — emit the same fixture AST twice; `assert md1 == md2` byte-for-byte.
+
+### Task 2.9: Public emit surface
+
+`src/google_doc_diff/emit/__init__.py` re-exports `emit_document_md` (the only public function consumers need).
+
+After Chunk 2: `emit_document_md(ast)` produces deterministic, attribute-complete Markdown for any AST. No I/O. No HTML yet.
+
+---
+
+## Chunk 3: HTML emitter
+
+Goal: parallel HTML serializer producing semantic HTML. Cross-emitter test asserts both serializers preserve the same set of stable IDs.
+
+### Task 3.1: `emit/html.py` — basic blocks
+
+**Files:** `src/google_doc_diff/emit/html.py`, `tests/unit/test_emit_html_blocks.py`
+
+Functions paralleling Markdown ones but emitting HTML: `<h1>`, `<p>`, `<ul>`/`<ol>`/`<li>`, `<a>`, `<span>`, `<strong>`/`<em>`/`<s>`/`<code>`. Attributes always alphabetized.
+
+### Task 3.2: `emit/html.py` — tables
+
+`<table>` / `<thead>` / `<tbody>` / `<tr>` / `<td>` with `colspan` / `rowspan` attributes when > 1.
+
+### Task 3.3: `emit/html.py` — tabs, comments, suggestions, footnotes, document
+
+- Tabs: `<section class="gd-tab" data-tab-id="..." data-title="..." data-level="N">` with nested `<section>`s for child tabs.
+- Comments: anchor as `<span class="gd-cmt-anchor" data-comment-id="...">`; thread emitted as `<aside class="gd-comment" id="c-...">…</aside>` at end of containing tab.
+- Suggestions: `<ins data-suggestion-id="s-..." data-author="..." data-created="...">` and `<del>`. Replacement → both with same `data-suggestion-id`.
+- Footnotes: `<sup><a href="#fn-...">n</a></sup>` in prose; `<aside class="gd-footnote" id="fn-...">…</aside>` at end.
+- `emit_document_html(doc) -> str` returns full HTML document with `<head>`, `<title>`, `<meta>` tags mirroring the YAML frontmatter, `<style>` block from `styles/css.py`, then `<body>`.
+
+### Task 3.4: Structural attribute audit (HTML side)
+
+`audit_html_output(ast, html) -> list[str]` — same checks as Markdown audit.
+
+`tests/round_trip/test_html_audit.py` mirrors the MD audit tests.
+
+### Task 3.5: ID-set equality across emitters
+
+`tests/round_trip/test_id_parity.py` — for each fixture AST, extract the set of `c-`, `s-`, `fn-`, `t-`, `bm-`, `i-` IDs from both the MD output and the HTML output; assert the sets are equal. Catches "we emitted the comment in MD but not HTML" bugs.
+
+### Task 3.6: Determinism test (HTML side) + public surface
+
+Mirrors Task 2.8/2.9.
+
+After Chunk 3: both emitters work end-to-end against handcrafted ASTs, both pass attribute audits, both produce identical ID sets.
+
+---
+
+## Chunk 4: Auth + API + Docs JSON → AST builder
+
+Goal: actually fetch a Google Doc and turn it into an AST. After this chunk, an internal Python entry point can `pull(doc_id) -> Document`.
+
+### Task 4.1: `auth.py` — credentials and token storage
+
+**Files:** `src/google_doc_diff/auth.py`, `tests/unit/test_auth.py`
+
+Functions:
+- `load_credentials(creds_path: Path | None = None, token_path: Path | None = None) -> Credentials` — reads `~/.config/gdoc-diff/credentials.json` (OAuth client) and `~/.config/gdoc-diff/token.json` (refresh token), refreshes the access token, returns `google.oauth2.credentials.Credentials`. Raises `AuthError` (custom exception) with a clear message if either file is missing.
+- `run_oauth_flow(creds_path: Path) -> None` — runs `InstalledAppFlow.run_local_server(port=0)` against `creds_path`, writes the resulting refresh token to `token_path`.
+- `import_gog_token(gog_token_path: Path, gog_creds_path: Path, out_path: Path | None = None) -> None` — convenience for users with `gog` already configured: reads the gog-format token + client creds, writes a Google-format authorized-user JSON to `~/.config/gdoc-diff/token.json`.
+
+Tests: use temp directories for creds/token files; mock the OAuth flow; assert auth errors message is informative.
+
+### Task 4.2: `api.py` — base wrapper with backoff
+
+**Files:** `src/google_doc_diff/api.py`, `tests/unit/test_api.py`
+
+`class GdocAPI(creds: Credentials)`:
+- Builds Drive v2, Drive v3, and Docs v1 service handles.
+- `_with_backoff(callable, *args, **kwargs)` — wraps any API call with exponential-backoff-with-jitter on 429 (retries: 1s, 2s, 4s, 8s, max 60s, up to 5 attempts).
+- `get_document(doc_id)` — Docs v1 `documents().get(documentId=doc_id, includeTabsContent=True)`; returns the JSON.
+- `list_revisions(doc_id)` — Drive v2 `revisions().list(...)` with the `fields` projection from the spec; auto-paginated.
+- `fetch_revision_export(export_url) -> bytes` — raw `requests.get` with `Authorization: Bearer` header; backoff on 429.
+- `list_comments(doc_id)` — Drive v3 `comments().list(...)` with `fields=comments(...,replies(...))`.
+
+Tests use `responses` library or mock the underlying service handles; assert backoff retries on 429.
+
+### Task 4.3: `ast/from_docs_json.py` — AST builder for current revision
+
+**Files:** `src/google_doc_diff/ast/from_docs_json.py`, `tests/unit/test_from_docs_json.py`
+
+`build_document(docs_json: dict, comments_json: list[dict]) -> Document` — walks the Docs API response and the Drive Comments response, produces a Document.
+
+Subroutines:
+- `_walk_tabs(tabs_list) -> list[Tab]` — recursive (tabs nest).
+- `_walk_body(body) -> list[Block]` — paragraph, table, sectionBreak, tableOfContents.
+- `_walk_paragraph(p, doc_styles) -> Paragraph | Heading | ListItem` — branches on `paragraphStyle.namedStyleType` and `bullet` presence.
+- `_walk_runs(elements, suggestion_id_map) -> list[Run | inline_node]` — handles textRun, inlineObjectElement, person, richLink, footnoteReference, equation, columnBreak (→ LineBreak), pageBreak (only inside paragraphs, otherwise treated as block).
+- `_extract_comments(comments_json) -> dict[str, Comment]` — map Drive Comments to our Comment objects, including replies + `quotedFileContent.value`.
+- `_extract_suggestions(docs_json) -> dict[str, Suggestion]` — walk `suggestedInsertions`/`suggestedDeletions` IDs across paragraphs; pair adjacent ones with same ID into `kind=replacement`.
+- `_extract_footnotes(docs_json) -> dict[str, Footnote]` — top-level `footnotes` map.
+- `_named_styles_from(docs_json) -> dict[str, dict]` — walk `namedStyles.styles` and capture per-style descriptors.
+
+Tests use captured Docs JSON fixtures (commit one or two small examples; capture-fixture target adds more later).
+
+### Task 4.4: AST builder integration test (against fixture)
+
+Use one captured Docs JSON from `tests/fixtures/docs/` covering: title, headings, paragraphs, list, table, comment, footnote. Assert `build_document(json, comments) -> Document` produces the expected node tree (compare via dataclasses.asdict equality).
+
+---
+
+## Chunk 5: pull / diff / revisions / auth CLI commands
+
+Goal: a working `gdoc` binary that does end-to-end pulls of real Docs.
+
+### Task 5.1: `cli.py` — `auth login` / `logout` / `status`
+
+Wire `auth.py` functions into a click subgroup `gdoc auth`. Tests use Click's `CliRunner` + temp dirs.
+
+### Task 5.2: `cli.py` — `pull` command
+
+```
+gdoc pull <doc-id-or-url> [--out PATH] [--extract-assets] [--revision REV_ID | --at ISO_TIME] [--color=auto|always|never]
+```
+
+For current revision: API.get_document → API.list_comments → from_docs_json.build_document → emit_document_md → write file.
+
+For `--revision`/`--at`: API.list_revisions → resolve to a revision id → API.fetch_revision_export(text/markdown URL) → from_google_md.build_document → emit.
+
+`--extract-assets`: download every `Image.src` (Drive URL) into `<slug>.assets/<image_id>.<ext>`, rewrite `Image.src` to `<slug>.assets/<filename>`. If not set, scan AST for any `Image` and print the warning to stderr.
+
+Output path defaults to `<slugify(title)>.md` in cwd.
+
+Tests use mocked API + a fixture doc.
+
+### Task 5.3: `cli.py` — `revisions` command
+
+Lists revisions in table or JSON. Uses `API.list_revisions`. Format: `id  modifiedDate  lastModifyingUser  exportFormats`. Tests with mocked API.
+
+### Task 5.4: `cli.py` — `diff` command
+
+Pull current (or `--revision`); diff against local file; print colored unified diff (use `difflib.unified_diff` + color codes); exit 0/1/2.
+
+If both files have `source_mode` frontmatter and they differ, prepend an informational warning to stderr.
+
+### Task 5.5: URL parser helper
+
+`api.parse_doc_id(s: str) -> str` — accepts a bare doc ID or a full Drive/Docs URL. Strip `?tab=` and other query params. Tests cover several URL shapes (with/without tabs query, with/without `/edit`).
+
+### Task 5.6: End-to-end smoke test (skipped without creds)
+
+`tests/e2e/test_pull_smoke.py` — gated by `os.getenv("GDOC_E2E_DOC_ID")`; if set, runs `gdoc pull <id>` against the live API and asserts the output is non-empty + parses as YAML frontmatter + valid Markdown.
+
+After Chunk 5: `gdoc pull <doc-id>` works against a real Doc and writes a usable `.md` file.
+
+---
+
+## Chunk 6 (partial): `from_google_md.py` parser
+
+Goal: lossy AST builder for Google's native markdown export. Used by `pull --revision` (the historical-revision path). **Replay components are deferred per user instruction — they need a heavily-edited test doc.**
+
+### Task 6.1: `ast/from_google_md.py`
+
+**Files:** `src/google_doc_diff/ast/from_google_md.py`, `tests/unit/test_from_google_md.py`
+
+`build_from_google_md(md: str, *, doc_id: str, revision_id: str, captured_at: datetime, drive_url: str, last_modifying_user: str | None) -> Document`.
+
+Approach: use `markdown-it-py` for parsing (add to deps), walk the token stream, map tokens to AST nodes:
+- `heading_open` h1..h6 → Heading
+- `paragraph_open` → Paragraph
+- `bullet_list_open`/`ordered_list_open` → ListItem stream
+- `table_open` → Table
+- `text` / `strong` / `em` / `s` / `code_inline` / `link` → Run nodes
+- `softbreak` → LineBreak
+- `inline html` → preserved as text (no try-to-parse)
+
+What's lost: comments (always empty), suggestions (always empty), footnotes (none in Google's MD export), tab structure (flattened), structural anchors. We populate `Document` with `comments_preserved=False`, `suggestions_preserved=False`, `source_mode='replay'` (this builder is only used by the historical-revision path; current-revision path uses `from_docs_json` which sets `source_mode='pull'`). Actually — pull --revision is still a pull, not a replay. Reframe: the source_mode is determined by the CLI command, not the builder; pass it in as a parameter.
+
+Tests: hand-author a small Google-style markdown, build, assert tree shape.
+
+### (Tasks 6.2–6.5: replay components — deferred)
+
+Per user instruction, deferred to a later session with a heavily-edited test doc:
+- `replay/timeline.py` — event-merger + sorter
+- `replay/reanchor.py` — re-anchor comments to historical prose via `quotedFileContent`
+- `replay/runner.py` — for-each-event executor
+- `cli.py replay` subcommand
+- `.gdoc-replay-state.json` schema enforcement
+
+`git.py` — even the wrapper is deferred because its only consumer is replay.
+
+---
+
+## Chunk 7: Stubs, canary, README
+
+### Task 7.1: v2 round-trip parser stubs
+
+**Files:** `src/google_doc_diff/parse/markdown.py`, `src/google_doc_diff/parse/html.py`, `tests/round_trip/test_parse_stubs.py`
+
+```python
+def parse_markdown(md: str) -> "Document":
+    """v2 round-trip parser. Not implemented in v1."""
+    raise NotImplementedError(
+        "Markdown round-trip parser is v2 work. "
+        "v1 enforces round-trip readiness via structural attribute audit; "
+        "see docs/superpowers/specs/2026-05-09-google-doc-diff-design.md."
+    )
+```
+
+Test asserts `pytest.raises(NotImplementedError)` and message includes "v2".
+
+### Task 7.2: Canary entry point
+
+**Files:** `src/google_doc_diff/canary.py`, `Makefile` target
+
+`python -m google_doc_diff.canary`:
+1. Check creds + token files exist; if not, print `skip: no credentials configured` and exit 0.
+2. Verify Drive v2 `revisions.list` returns `exportLinks` with `text/html` and `text/markdown` keys for `GDOC_CANARY_DOC_ID`.
+3. Verify Drive v3 `comments.list` returns at least an empty list (we just want the call to succeed).
+4. Print `canary OK` and exit 0; non-zero on real failure.
+
+Add `make canary` target.
+
+### Task 7.3: README
+
+**Files:** `README.md`
+
+Sections:
+- What it does (one paragraph)
+- Setup: enable Drive + Docs APIs in a Google Cloud project, download `credentials.json`, run `gdoc auth login`. Alternative: `gdoc auth login --import-gog-token` for users who already have `gog` set up.
+- Required scopes table
+- Commands cheatsheet
+- v1 limitations (no replay yet, no push, sparse historical revisions, etc.)
+- Pointer to spec for design rationale
+
+### Task 7.4: Final integration: end-to-end pull of the example doc
+
+Run `gdoc pull 1IE_3Fz_0NKiIO0c97W4vpHDl4b1x9t7CsZ3s8BedUf4 --out /tmp/example.md` and inspect the output. Compare to `tests/fixtures/exampledoc/ComprehensiveDigitalProjectManagementGuide.html` (manually). Iterate on emitter for any obvious badness: spacing, list nesting, table rendering, etc.
+
+After Chunk 7: v1 ships. Replay can land in a follow-up.
+
+---
+
+**End of plan.** Replay (timeline merger, re-anchor, runner, git wrapper, `gdoc replay` CLI, state file) is intentionally deferred — it requires a doc with substantial edit history to test meaningfully, which the user will provide in a later session.
+
