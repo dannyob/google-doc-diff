@@ -31,6 +31,13 @@ def test_is_clean_false_after_change(repo):
     assert gitwrap.is_clean(repo) is False
 
 
+def test_is_clean_ignores_listed_paths(repo):
+    (repo / "noise.txt").write_text("noise")
+    _git(["add", "noise.txt"], repo)
+    assert gitwrap.is_clean(repo, ignore=["noise.txt"]) is True
+    assert gitwrap.is_clean(repo) is False
+
+
 def test_commit_records_author_and_timestamp(repo):
     (repo / "f.md").write_text("content")
     gitwrap.add([Path("f.md")], cwd=repo)

@@ -11,10 +11,18 @@ class GitError(RuntimeError):
     pass
 
 
-def is_clean(cwd: Path | None = None) -> bool:
-    """True iff the working tree (excluding untracked) has no staged/unstaged changes."""
+def is_clean(cwd: Path | None = None, ignore: list[str] | None = None) -> bool:
+    """True iff the working tree has no staged/unstaged changes (excluding
+    untracked, plus any paths in `ignore`)."""
     r = _run(["git", "status", "--porcelain"], cwd=cwd, capture=True)
-    return r.stdout.strip() == ""
+    ignored = set(ignore or [])
+    for line in r.stdout.splitlines():
+        # porcelain v1 lines: "XY path" — extract path
+        path = line[3:].strip()
+        if path in ignored:
+            continue
+        return False
+    return True
 
 
 def add(paths: list[Path], cwd: Path | None = None) -> None:

@@ -249,7 +249,15 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     out_path = out or Path(_slugify(doc_id) + ".md")
 
     if commit:
-        if not gitwrap.is_clean(cwd):
+        # The state file itself is always changing during replay; same with
+        # the output .md (we're about to overwrite it on each event). Both
+        # are expected-dirty.
+        ignore = [".gdoc-replay-state.json"]
+        try:
+            ignore.append(str(out_path.relative_to(cwd)))
+        except ValueError:
+            pass
+        if not gitwrap.is_clean(cwd, ignore=ignore):
             click.echo("git working tree is dirty; commit or stash first.", err=True)
             sys.exit(2)
 

@@ -282,6 +282,8 @@ def _emit_inline(node, doc: Document) -> str:
         return _emit_image(node)
     if isinstance(node, Unsupported):
         return _emit_unsupported(node, inline=True)
+    if isinstance(node, HorizontalRule | PageBreak | SectionBreak):
+        return "<br>"
     raise TypeError(f"unhandled inline node: {type(node).__name__}")
 
 

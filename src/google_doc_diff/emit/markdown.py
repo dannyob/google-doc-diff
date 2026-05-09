@@ -270,7 +270,8 @@ def _cell_to_inline(cell, doc: Document, fn_ids: set) -> str:
     """Flatten a cell's blocks into a one-line cell representation.
 
     Cells in pipe tables can't carry block structure; we join paragraph
-    contents with `<br>` for soft breaks across paragraphs.
+    contents with `<br>` for soft breaks across paragraphs and prefix list
+    items with their marker.
     """
     parts: list[str] = []
     for blk in cell.blocks:
@@ -278,6 +279,12 @@ def _cell_to_inline(cell, doc: Document, fn_ids: set) -> str:
             text = _emit_inline_runs(blk.runs, doc, fn_ids)
             if text.strip():
                 parts.append(text)
+        elif isinstance(blk, ListItem):
+            marker = "1. " if blk.kind == "ordered" else "• "
+            indent = "&nbsp;&nbsp;" * blk.level
+            text = _emit_inline_runs(blk.runs, doc, fn_ids)
+            if text.strip():
+                parts.append(f"{indent}{marker}{text}")
         else:
             text = _emit_block(blk, doc, fn_ids).replace("\n", " ").strip()
             if text:
@@ -372,6 +379,10 @@ def _emit_inline(node, doc: Document, fn_ids: set) -> str:
         return _emit_image_block(node)
     if isinstance(node, Unsupported):
         return _emit_unsupported(node, inline=True)
+    if isinstance(node, HorizontalRule | PageBreak | SectionBreak):
+        # Block-level breaks that the Docs API surfaces as inline elements
+        # inside paragraphs. Render as a soft break.
+        return "  \n"
     if isinstance(node, tuple) and node[0] == "REPLACEMENT":
         # ('REPLACEMENT', suggestion_id, old_runs, new_runs)
         _, sid, old, new = node
