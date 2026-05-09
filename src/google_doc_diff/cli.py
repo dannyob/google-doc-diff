@@ -320,7 +320,15 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
         click.echo(f"  {ev.kind:<14} {ev.timestamp.isoformat()}  {sha or '(no commit)'}")
 
     runner.execute(pending, on_event=_on_event)
-    click.echo(f"replayed {len(pending)} event(s); state: {cwd}/.gdoc-replay-state.json")
+    click.echo(
+        f"replayed {len(pending)} event(s); state: {cwd}/.gdoc-replay-state.json"
+    )
+    if commit and pending:
+        click.echo(
+            f"head state (live doc, suggestions, full chip metadata) written "
+            f"uncommitted to {out_path}; `git diff HEAD` to see what's changed "
+            f"since the last replayed event."
+        )
 
 
 def _parse_duration(s: str):

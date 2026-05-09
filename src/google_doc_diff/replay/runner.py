@@ -21,6 +21,8 @@ from pathlib import Path
 
 from google_doc_diff.api import GdocAPI
 from google_doc_diff.ast.anchor_comments import anchor_comments
+from google_doc_diff.ast.chip_counts import attach_widget_renderings
+from google_doc_diff.ast.from_docs_json import build_document
 from google_doc_diff.ast.from_google_md import build_from_google_md
 from google_doc_diff.ast.nodes import Comment, CommentReply, Document
 from google_doc_diff.emit import emit_document_md
@@ -44,6 +46,16 @@ class ReplayRunner:
         self.doc_id = doc_id
         self.opt = options
         self._md_cache: dict[str, str] = {}
+        self._current_docs_json: dict | None = None    # cached on first need
+        self._current_revision_id: str | None = None   # ditto
+
+    def _ensure_current_doc_loaded(self) -> str:
+        """Lazily fetch the current Doc JSON so we can detect when an event
+        is processing the head revision (and use the rich JSON path)."""
+        if self._current_docs_json is None:
+            self._current_docs_json = self.api.get_document(self.doc_id)
+            self._current_revision_id = self._current_docs_json.get("revisionId", "")
+        return self._current_revision_id or ""
 
     # -- public ----------------------------------------------------------
 
@@ -53,7 +65,20 @@ class ReplayRunner:
         *,
         on_event=None,
     ) -> list[tuple[Event, str | None]]:
-        """Run the timeline. Returns list of (event, git_sha-or-None)."""
+        """Run the timeline. Returns list of (event, git_sha-or-None).
+
+        After the loop completes, the runner overwrites the output file ONE
+        MORE time with the rich JSON-derived state — full chip metadata,
+        live suggestions, anything `gdoc pull` would return — but does NOT
+        commit it. So:
+            committed history (HEAD..) = faithful historical replay (lossy)
+            working tree                = the live doc as it is right now
+            git diff HEAD               = what's changed since the last
+                                          committed event
+        That separation lets suggestions live in the working tree (where
+        they belong as in-progress edits) without back-attributing them to
+        past replay points.
+        """
         results: list[tuple[Event, str | None]] = []
         latest_revision: str | None = None
         comment_state: dict[str, Comment] = {}
@@ -65,7 +90,6 @@ class ReplayRunner:
                 _apply_comment_event(comment_state, ev, self.opt.include_comments)
 
             if latest_revision is None:
-                # No prose to render yet; skip until first prose_change.
                 results.append((ev, None))
                 if on_event:
                     on_event(ev, None)
@@ -81,7 +105,45 @@ class ReplayRunner:
             results.append((ev, sha))
             if on_event:
                 on_event(ev, sha)
+
+        # Final pass: write the rich live state to the working tree
+        # uncommitted. (Skipped if no event was processed.)
+        if results:
+            try:
+                self._write_rich_head_state()
+            except Exception as e:
+                # Don't let live-state enrichment failure poison a replay
+                # that already succeeded on the historical side.
+                if on_event:
+                    on_event(None, f"rich head state failed: {e}")
         return results
+
+    def _write_rich_head_state(self) -> None:
+        """Overwrite the output file with the live doc's rich JSON state
+        (full chip metadata, suggestions intact). Does NOT commit."""
+        self._ensure_current_doc_loaded()
+        docs_json = self._current_docs_json or {}
+        try:
+            comments_json = self.api.list_comments(self.doc_id)
+        except Exception:
+            comments_json = []
+        doc = build_document(
+            docs_json,
+            comments_json=comments_json,
+            drive_url=f"https://docs.google.com/document/d/{self.doc_id}/edit",
+        )
+        doc.source_mode = "pull"   # head state is identical to a fresh pull
+        # Recover chip renderings via the markdown export cross-reference.
+        try:
+            revs = self.api.list_revisions(self.doc_id)
+            if revs:
+                md_url = (revs[-1].get("exportLinks") or {}).get("text/markdown")
+                if md_url:
+                    md = self.api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
+                    attach_widget_renderings(doc, md)
+        except Exception:
+            pass
+        self.opt.out_path.write_text(emit_document_md(doc))
 
     # -- helpers ----------------------------------------------------------
 
