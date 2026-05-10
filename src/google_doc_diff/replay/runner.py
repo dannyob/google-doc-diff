@@ -144,6 +144,39 @@ class ReplayRunner:
         except Exception:
             pass
         self.opt.out_path.write_text(emit_document_md(doc))
+        if self.opt.extract_assets:
+            self._extract_assets_for(doc)
+
+    def _extract_assets_for(self, doc) -> None:
+        """Download every Image's src into <out>.assets/ and rewrite the AST."""
+        from google_doc_diff.ast.nodes import Image
+
+        assets_dir = self.opt.out_path.with_suffix(".assets")
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        saved = 0
+
+        def walk(node):
+            nonlocal saved
+            if isinstance(node, Image) and node.src.startswith("http"):
+                try:
+                    blob = self.api.fetch_revision_export(node.src)
+                    ext = _guess_ext(node.src)
+                    fname = f"{node.image_id}{ext}"
+                    (assets_dir / fname).write_bytes(blob)
+                    node.src = f"{assets_dir.name}/{fname}"
+                    saved += 1
+                except Exception:
+                    pass
+            for attr in ("runs", "blocks", "rows", "cells", "children", "tabs"):
+                children = getattr(node, attr, None)
+                if children:
+                    for c in children:
+                        walk(c)
+
+        for tab in doc.tabs:
+            walk(tab)
+        if saved:
+            self.opt.out_path.write_text(emit_document_md(doc))
 
     # -- helpers ----------------------------------------------------------
 
@@ -291,3 +324,10 @@ def _split_author(author: str) -> tuple[str, str]:
     if "@" in author and "<" not in author:
         return author.split("@")[0], author
     return author, author
+
+
+def _guess_ext(url: str) -> str:
+    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
+        if ext in url.lower():
+            return ext
+    return ".bin"

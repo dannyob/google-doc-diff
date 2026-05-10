@@ -107,24 +107,10 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
         sys.exit(2)
 
     try:
-        docs_json = api.get_document(doc_id)
-        comments_json = api.list_comments(doc_id)
+        document = _pull_rich_document(api, doc_id, chip_counts=chip_counts)
     except Exception as e:
         click.echo(f"api: {e}", err=True)
         sys.exit(2)
-
-    document = build_document(docs_json, comments_json)
-
-    if chip_counts:
-        from google_doc_diff.ast.chip_counts import attach_counts_to_chips
-        try:
-            revs = api.list_revisions(doc_id)
-            md_url = ((revs[-1] if revs else {}).get("exportLinks") or {}).get("text/markdown")
-            if md_url:
-                exported_md = api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
-                attach_counts_to_chips(document, exported_md)
-        except Exception as e:
-            click.echo(f"warning: chip-count recovery failed: {e}", err=True)
 
     md = emit_document_md(document)
 
@@ -189,6 +175,8 @@ def revisions(doc, fmt):
               help="Coalesce adjacent same-author prose events within DURATION (e.g. 5m, 2h).")
 @click.option("--include-comments/--no-include-comments", default=True,
               help="Reconstruct comment state at each event from Drive Comments API.")
+@click.option("--extract-assets", is_flag=True,
+              help="Download images for the live (working-tree) state into <slug>.assets/.")
 @click.option("--dry-run", is_flag=True,
               help="Walk the timeline; print events but don't write or commit.")
 @click.option("--resume", is_flag=True,
@@ -196,7 +184,7 @@ def revisions(doc, fmt):
 @click.option("--restart", is_flag=True,
               help="Discard any existing replay state and start over.")
 def replay(doc, since, until, out, commit, squash_by_author, include_comments,
-           dry_run, resume, restart):
+           extract_assets, dry_run, resume, restart):
     """Walk revisions + comment events and emit one .md (and optional commit) per event."""
     from datetime import datetime as _dt
 
@@ -289,7 +277,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     else:
         state = ReplayState(
             doc_id=doc_id, out_path=str(out_path),
-            extract_assets=False, include_comments=include_comments,
+            extract_assets=extract_assets, include_comments=include_comments,
             since=since, until=until,
             timeline_hash=new_hash,
             events=[EventState(**event_to_state_dict(e)) for e in events],
@@ -299,6 +287,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     runner = ReplayRunner(api, doc_id, RunnerOptions(
         out_path=out_path, commit=commit, cwd=cwd,
         include_comments=include_comments,
+        extract_assets=extract_assets,
     ))
 
     # Resume: skip events already committed.
@@ -396,26 +385,10 @@ def fetch(doc, out, extract_assets):
     api = GdocAPI(creds)
 
     try:
-        docs_json = api.get_document(doc_id)
-        comments_json = api.list_comments(doc_id)
+        document = _pull_rich_document(api, doc_id, chip_counts=True)
     except Exception as e:
         click.echo(f"api: {e}", err=True)
         sys.exit(2)
-
-    document = build_document(docs_json, comments_json)
-
-    # Always run chip-counts cross-reference (it's cheap and the working
-    # tree should be as informative as possible).
-    try:
-        from google_doc_diff.ast.chip_counts import attach_widget_renderings
-        revs = api.list_revisions(doc_id)
-        md_url = ((revs[-1] if revs else {}).get("exportLinks") or {}).get("text/markdown")
-        if md_url:
-            md_text = api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
-            attach_widget_renderings(document, md_text)
-    except Exception as e:
-        click.echo(f"warning: chip-count recovery failed: {e}", err=True)
-
     out_path.write_text(emit_document_md(document))
     click.echo(f"refreshed {out_path}")
     if (cwd / ".git").exists():
@@ -439,13 +412,10 @@ def diff(doc, path, color):
         sys.exit(2)
     api = GdocAPI(creds)
     try:
-        docs_json = api.get_document(doc_id)
-        comments_json = api.list_comments(doc_id)
+        document = _pull_rich_document(api, doc_id, chip_counts=True)
     except Exception as e:
         click.echo(f"api: {e}", err=True)
         sys.exit(2)
-
-    document = build_document(docs_json, comments_json)
     md_new = emit_document_md(document)
 
     target = path or Path(_slugify(document.title) + ".md")
@@ -454,13 +424,19 @@ def diff(doc, path, color):
         sys.exit(2)
     md_old = target.read_text()
 
-    if md_new == md_old:
+    # Strip wall-clock metadata from both sides so an identical pull doesn't
+    # show as a diff. captured_at and last_modifying_user can differ between
+    # pulls without any actual content change; revision_id changes on every
+    # save (including no-op saves), so it's also dropped from the comparison.
+    md_old_norm = _strip_volatile_frontmatter(md_old)
+    md_new_norm = _strip_volatile_frontmatter(md_new)
+    if md_new_norm == md_old_norm:
         sys.exit(0)
 
     use_color = color == "always" or (color == "auto" and sys.stdout.isatty())
     diff_lines = difflib.unified_diff(
-        md_old.splitlines(keepends=True),
-        md_new.splitlines(keepends=True),
+        md_old_norm.splitlines(keepends=True),
+        md_new_norm.splitlines(keepends=True),
         fromfile=f"local:{target}",
         tofile=f"remote:{doc_id}",
     )
@@ -473,6 +449,54 @@ def diff(doc, path, color):
 
 
 # --- helpers --------------------------------------------------------------
+
+
+def _pull_rich_document(api, doc_id, *, chip_counts=True):
+    """Shared rich-pull path used by gdoc pull / gdoc diff / gdoc fetch.
+
+    Fetches Docs JSON + Drive Comments, builds the AST, and (if chip_counts)
+    cross-references with the markdown export to recover chip emoji + counts.
+    Same content regardless of which command called it, so diffs are
+    apples-to-apples.
+    """
+    docs_json = api.get_document(doc_id)
+    comments_json = api.list_comments(doc_id)
+    document = build_document(docs_json, comments_json)
+    if chip_counts:
+        from google_doc_diff.ast.chip_counts import attach_widget_renderings
+        try:
+            revs = api.list_revisions(doc_id)
+            md_url = ((revs[-1] if revs else {}).get("exportLinks") or {}).get("text/markdown")
+            if md_url:
+                md_text = api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
+                attach_widget_renderings(document, md_text)
+        except Exception:
+            pass   # silent: chip recovery is best-effort
+    return document
+
+
+_VOLATILE_FRONTMATTER_KEYS = ("captured_at", "last_modifying_user", "revision_id")
+
+
+def _strip_volatile_frontmatter(md: str) -> str:
+    """Remove frontmatter lines whose values legitimately differ between
+    pulls of an unchanged doc (wall-clock timestamps and per-save metadata).
+    Anything else in the frontmatter — title, source_mode,
+    comments_preserved, etc. — is kept so real metadata changes still show.
+    """
+    if not md.startswith("---\n"):
+        return md
+    end = md.find("\n---\n", 4)
+    if end < 0:
+        return md
+    head = md[4:end]
+    body = md[end + 5:]
+    kept = []
+    for line in head.split("\n"):
+        if any(line.startswith(k + ":") for k in _VOLATILE_FRONTMATTER_KEYS):
+            continue
+        kept.append(line)
+    return "---\n" + "\n".join(kept) + "\n---\n" + body
 
 
 def _slugify(s: str) -> str:
