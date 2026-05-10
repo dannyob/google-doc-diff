@@ -350,6 +350,78 @@ def _parse_duration(s: str):
     return _td(seconds=total)
 
 
+# --- fetch (refresh working-tree state) ----------------------------------
+
+
+@cli.command()
+@click.argument("doc", required=False)
+@click.option("--out", type=click.Path(path_type=Path),
+              help="Output path (default: read from .gdoc-replay-state.json or "
+                   "fall back to <slug>.md).")
+@click.option("--extract-assets", is_flag=True)
+def fetch(doc, out, extract_assets):
+    """Refresh the working-tree state with a fresh live pull.
+
+    Designed for use in directories where `gdoc replay --commit` has built a
+    git history: re-runs only the rich JSON-derived live-state pass, so
+    `git diff HEAD` gives you 'what's changed in the doc since the last
+    replayed event' — without re-walking the timeline.
+
+    With no DOC argument, reads the doc id and out path from
+    .gdoc-replay-state.json in the current directory.
+    """
+    from google_doc_diff.replay.state import read_state
+
+    cwd = Path.cwd()
+    state = read_state(cwd)
+    if doc:
+        doc_id = parse_doc_id(doc)
+    elif state:
+        doc_id = state.doc_id
+    else:
+        click.echo("no DOC argument given and no .gdoc-replay-state.json in cwd; "
+                   "pass a doc id or url explicitly.", err=True)
+        sys.exit(2)
+
+    if not out and state and not doc:
+        out_path = Path(state.out_path)
+    else:
+        out_path = out or Path(_slugify(doc_id) + ".md")
+
+    try:
+        creds = load_credentials()
+    except AuthError as e:
+        click.echo(f"auth: {e}", err=True)
+        sys.exit(2)
+    api = GdocAPI(creds)
+
+    try:
+        docs_json = api.get_document(doc_id)
+        comments_json = api.list_comments(doc_id)
+    except Exception as e:
+        click.echo(f"api: {e}", err=True)
+        sys.exit(2)
+
+    document = build_document(docs_json, comments_json)
+
+    # Always run chip-counts cross-reference (it's cheap and the working
+    # tree should be as informative as possible).
+    try:
+        from google_doc_diff.ast.chip_counts import attach_widget_renderings
+        revs = api.list_revisions(doc_id)
+        md_url = ((revs[-1] if revs else {}).get("exportLinks") or {}).get("text/markdown")
+        if md_url:
+            md_text = api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
+            attach_widget_renderings(document, md_text)
+    except Exception as e:
+        click.echo(f"warning: chip-count recovery failed: {e}", err=True)
+
+    out_path.write_text(emit_document_md(document))
+    click.echo(f"refreshed {out_path}")
+    if (cwd / ".git").exists():
+        click.echo("`git diff HEAD` to see what's changed since the last commit.")
+
+
 # --- diff ----------------------------------------------------------------
 
 

@@ -174,9 +174,18 @@ class ReplayRunner:
         revision_id: str,
         comment_state: dict[str, Comment],
     ) -> Document:
+        # Use the live doc's title (so historical replays don't pick up
+        # spurious "first heading" titles from their content). Cheap because
+        # _ensure_current_doc_loaded caches.
+        try:
+            self._ensure_current_doc_loaded()
+            title = (self._current_docs_json or {}).get("title", "")
+        except Exception:
+            title = ""
         doc = build_from_google_md(
             md,
             doc_id=self.doc_id,
+            title=title,
             revision_id=revision_id,
             captured_at=ev.timestamp,
             last_modifying_user=ev.author,
