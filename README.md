@@ -1,201 +1,166 @@
-# gdoc — google-doc-diff
+# gdoc
 
-Pull Google Docs into high-fidelity Pandoc-flavor Markdown (and parallel
-HTML), with stable IDs, comments, suggestions, and inline widgets (votes,
-reactions, dates, file/folder/sheet/slides chips, dropdowns, person
-mentions) preserved as round-trip-ready metadata. Designed for storing
-Docs in git, feeding them to AI tools, and producing readable diffs across
-edits.
+`gdoc` pulls a Google Doc into Markdown (or HTML), keeping comments,
+suggestions, voting chips, dates, file/folder/sheet chips, and person mentions
+intact. It can also replay the doc's full edit history into a git repo, one
+commit per prose change / comment / reply / resolve, with the original
+authors and timestamps.
 
-v1 is one-way (Doc → local). The on-disk format preserves enough metadata
-that a future v2 can push edits back into the Doc.
+```sh
+$ gdoc pull "https://docs.google.com/document/d/1ABC.../edit"
+wrote q3-planning-notes.md
+warning: 1 image URL(s) may rotate. For archival use, re-run with --extract-assets.
 
-See `docs/superpowers/specs/2026-05-09-google-doc-diff-design.md` for the
-full design.
+$ head -25 q3-planning-notes.md
+---
+captured_at: '2026-08-12T14:35:12+00:00'
+comments_preserved: true
+doc_id: 1ABCDEFGexampledocid
+source_mode: pull
+suggestions_preserved: true
+title: Q3 Planning Notes
+---
 
-## Installation
+# Roadmap
 
-```bash
-make install-dev          # creates .venv, installs in editable mode + dev deps
-source .venv/bin/activate
-gdoc --version
+The proposal is [unfinished]{.gd-cmt-anchor #c-XYZ1}[^c-XYZ1] in its
+current form. We need to add {++the auth section++}[^s-S1] before
+shipping. ([Design Doc Folder]{.gd-chip data-kind="richlink-folder"
+data-uri="https://drive.google.com/drive/folders/0AC..."})
+
+## Sept 4, 2026 [(➕ 3)]{.gd-chip data-kind="vote-thumbsup" data-count="3"
+data-emoji="➕"}
+
+[^c-XYZ1]: ::: {.gd-comment data-author="alice@example.com"
+    data-created="2026-08-10T21:07:25Z" data-resolved="false"}
+    **alice@** 2026-08-10: which auth do we mean — OAuth or the SSO bridge?
+
+    > **bob@** 2026-08-11: OAuth; the SSO piece is in a separate doc
+    :::
 ```
 
-## Setup (Google API access)
+## Install
 
-You need a Google Cloud project with the Docs and Drive APIs enabled, plus
-an OAuth client of type "Desktop app". Two paths:
+```sh
+git clone <this-repo> && cd google-doc-diff
+make install-dev
+source .venv/bin/activate
+```
 
-### Option A — Reuse `gog` credentials
+You'll need a Google Cloud project with the Docs and Drive APIs enabled and
+an OAuth client of type "Desktop app". Drop the downloaded credentials at
+`~/.config/gdoc-diff/credentials.json` and run `gdoc auth login` (browser
+opens once; refresh token is cached).
 
-If you use `gog` (Danny's Google CLI), import its existing authorization
-without redoing the OAuth dance:
+If you already use [`gog`](https://github.com/danny/gogcli) you can skip
+the OAuth dance:
 
-```bash
+```sh
 gog auth tokens export <your-email> --out /tmp/gogtoken.json
 gdoc auth login --import-gog-token /tmp/gogtoken.json
 \rm /tmp/gogtoken.json
 ```
 
-gog's default `drive` + `sheets` scopes are sufficient. (`documents.readonly`
-isn't strictly required — `drive` covers the Docs API call too.)
+## Replay: HEAD = history, working tree = the live doc
 
-### Option B — Fresh OAuth flow
+The unusual command is `gdoc replay --commit`. It walks every revision and
+every comment / reply / resolve / reopen event in chronological order and
+makes one git commit per event, preserving the original author and
+timestamp. After the loop, it overwrites the file one more time with the
+rich live state from the Docs API but leaves it **uncommitted**. So:
 
-```bash
-# After downloading credentials.json from console.cloud.google.com:
-mkdir -p ~/.config/gdoc-diff
-mv ~/Downloads/credentials.json ~/.config/gdoc-diff/credentials.json
-gdoc auth login                # opens a browser; caches token.json
+```
+HEAD                = the historical replay (committed)
+working tree        = the live doc as it is right now
+git diff HEAD       = what's changed since the last replayed event
+gdoc fetch          = refresh the working tree without re-walking history
 ```
 
-Required scopes:
+Sample run on a heavily-commented planning doc, scoped to the last 36 hours:
 
-| Scope | Used for |
-|---|---|
-| `https://www.googleapis.com/auth/documents.readonly` | Structured Docs JSON (current revision; full fidelity) |
-| `https://www.googleapis.com/auth/drive.readonly` | Revision listing, exportLinks fetches, Drive Comments API |
+```sh
+$ gdoc replay $DOC --out doc.md --commit --since 2026-08-10T00:00:00Z --squash-by-author 5m
+  prose_change   2026-08-10T00:05:39+00:00  961bfac...
+  comment_create 2026-08-10T15:11:03+00:00  93ad269...
+  reply_create   2026-08-10T15:11:14+00:00  4a5e9bc...
+  ...
+replayed 32 event(s); state: ./.gdoc-replay-state.json
+head state (live doc, suggestions, full chip metadata) written uncommitted to
+doc.md; `git diff HEAD` to see what's changed since the last replayed event.
 
-## Commands
-
-```bash
-gdoc pull <doc-id-or-url> [--out FILE.md] [--html-out FILE.html]
-                          [--extract-assets] [--no-chip-counts]
-    Fetch the current revision; write Markdown (and optionally HTML).
-
-gdoc fetch [<doc-id-or-url>] [--out FILE.md]
-    Refresh the working tree with a live pull. With no DOC argument,
-    reads the doc id and out path from .gdoc-replay-state.json in cwd.
-    Designed for the post-replay workflow (see below).
-
-gdoc diff <doc-id-or-url> [PATH.md] [--color=auto|always|never]
-    Pull current; show colored unified diff against the local file.
-    Exits 0 if identical, 1 if different, 2 on error.
-
-gdoc revisions <doc-id-or-url> [--since ISO] [--until ISO]
-                               [--format table|json]
-    List Drive revisions: id, modifiedTime, lastModifyingUser.
-
-gdoc replay <doc-id-or-url> --since ISO [--until ISO]
-                            [--out FILE.md] [--commit]
-                            [--squash-by-author DURATION]
-                            [--include-comments | --no-include-comments]
-                            [--dry-run] [--resume | --restart]
-    Walk revisions + Drive Comments API events into one chronological
-    timeline; emit one .md per event (and one git commit per event with
-    --commit, with the original author and timestamp). After the loop
-    completes, the working tree is overwritten with the live rich state
-    (uncommitted) — see workflow below.
-
-gdoc auth login [--credentials-file PATH] [--import-gog-token PATH]
-gdoc auth logout
-gdoc auth status
+$ git log --pretty="%h %an %s" | head -5
+4a72132 carol      prose: revision 9245
+1938f6d bob        reply: c-XYZ7 r-R12
+9235fb9 alice      reply: c-XYZ7 r-R11
+b7c20ca dave       prose: revision 9201
+56836c5 bob        comment: c-XYZ6
 ```
 
-A doc argument accepts a bare doc ID or any
+Suggestions live only in the working tree — they're in-progress, not
+historical, so they don't get back-attributed to past replay points.
+
+## Other commands
+
+```
+gdoc pull <doc> [--out FILE.md] [--html-out FILE.html] [--extract-assets]
+gdoc fetch [<doc>]                 refresh the working tree (reads
+                                   .gdoc-replay-state.json if present)
+gdoc diff <doc> [PATH.md]          unified diff vs local (exit 0/1/2)
+gdoc revisions <doc>               list Drive revisions
+gdoc auth login | logout | status
+```
+
+A `<doc>` argument is a bare doc ID or any
 `https://docs.google.com/document/d/<id>/edit?...` URL.
 
-## Replay workflow: HEAD as history, working tree as the live doc
+## Inline widgets
 
-`gdoc replay --commit` produces a git history that mirrors the social
-shape of the Doc — every prose change, comment, reply, resolve, reopen
-becomes its own commit, in chronological order, with the original author
-and timestamp. After all events are committed, the runner overwrites the
-output file ONE more time with the rich live state from the Docs API
-(suggestions intact, chips with full structured metadata) and leaves it
-**uncommitted**.
+Docs encodes some chips as structured types and others as opaque
+`U+E907` placeholders with no metadata in the API. `gdoc` extracts what
+it can:
 
-```
-HEAD..committed history  =  faithful historical replay (lossy text;
-                            chips appear as Google's flat markdown
-                            renderings since exportLinks is the only
-                            historical content path)
-working tree             =  the live doc as it is RIGHT NOW
-git diff HEAD            =  what's changed since the last replayed event
-```
-
-Suggestions naturally fit this model: they're in-progress edits, so they
-belong in the working tree (where they don't get back-attributed to past
-events). When you later want to refresh the working tree without
-re-walking the timeline:
-
-```bash
-gdoc fetch                # reads .gdoc-replay-state.json; refetches live
-git diff HEAD             # see what's changed since the last replayed event
-```
-
-## Inline widget handling
-
-The Docs API exposes some inline widgets as structured types and others
-as opaque Private Use Area placeholders. `gdoc pull` (and `gdoc fetch`)
-extract everything it can:
-
-| Widget | API representation | Output |
+| Widget | API form | Output |
 |---|---|---|
 | Person mention | `person` element | `[Alice]{.gd-chip data-kind="person" data-email="..."}` |
-| Doc / Folder / Sheet / Slides / Form / Drawing chip | `richLink` element | `[Title]{.gd-chip data-kind="richlink-folder" data-uri="..." data-mime_type="..." data-rich_link_id="..."}` (kind suffix derived from MIME) |
-| Date chip | `dateElement` | `[May 5, 2026]{.gd-chip data-kind="date" data-timestamp="2026-05-05T12:00:00Z" data-date_format="..."}` |
-| Voting / reaction chip (`➕`, `❤️`, `👍`, `🚀`) | PUA `U+E907` (no chip-type or count info in JSON) | `[(➕ 1)]{.gd-chip data-kind="vote-thumbsup" data-count="1" data-emoji="➕"}` (recovered via markdown export cross-reference) |
-| Dropdown chip | PUA `U+E907` (resolved value rendered in markdown export) | `[Standard White (#FFFFFF)]{.gd-chip data-kind="dropdown-color" data-rendered="..."}` |
-| Other unrenderable widgets | PUA `U+E907` | Generic `[?]{.gd-chip data-kind="reaction"}` if cross-reference fails |
-| Decorative chip icons | dangling `inlineObjectElement` | suppressed |
+| File / folder / sheet / slides | `richLink` | `[Title]{.gd-chip data-kind="richlink-folder" data-uri="..."}` (kind from MIME) |
+| Date | `dateElement` | `[May 5, 2026]{.gd-chip data-kind="date" data-timestamp="2026-05-05T12:00:00Z"}` |
+| Vote / reaction (`➕`, `❤️`, `👍`, `🚀`) | `U+E907` placeholder | `[(➕ 3)]{.gd-chip data-kind="vote-thumbsup" data-count="3"}` (recovered via markdown export) |
+| Dropdown | `U+E907` placeholder | `[Standard White (#FFFFFF)]{.gd-chip data-kind="dropdown-color"}` |
+| Other / unrenderable | `U+E907` placeholder | `[?]{.gd-chip data-kind="reaction"}` if cross-reference fails |
 
-The chip-count cross-reference (`--chip-counts`, on by default) is one
-extra Drive markdown-export call per pull. Disable with `--no-chip-counts`
-if you don't care about counts and want to skip the call.
+The vote / reaction recovery costs one extra Drive markdown-export call
+per pull. Disable it with `--no-chip-counts` if you don't need counts.
 
-## Comments
+## What it doesn't do
 
-Comments and replies render as Pandoc footnote definitions, with the
-anchored prose wrapped in `[…]{.gd-cmt-anchor #c-…}[^c-…]`. Short
-single-paragraph comments use Pandoc's inline `^[…]` form. The Drive
-Comments API exposes the anchor as a text snippet (`quotedFileContent`),
-so reanchoring against any historical revision (or against the current
-revision after edits) is done by substring search; comments whose snippet
-can't be found get marked `data-orphaned="true"`.
-
-## What v1 does and doesn't do
-
-**Does:**
-- Pull a current Doc to deterministic Markdown + HTML
-- Preserve comments (with replies, resolved state) as Pandoc footnotes
-- Preserve suggestions (insert / delete / replace) as CriticMarkup with
-  metadata sidecars
-- Handle multi-tab documents (including nested tabs)
-- Extract person, file/folder/sheet/slides/etc. rich-link chips, date
-  chips, and recover voting / reaction / dropdown chip renderings via
-  markdown-export cross-reference
-- Synthesize stable CSS classes from inline-override styling
-- Embed a `<style>` block in the markdown so styling round-trips
-- Replay full edit history (revisions + comment events) into a chronological
-  git history, with original authors and timestamps; leave the live state
-  in the working tree uncommitted
-
-**Doesn't (yet):**
-- Push edits back to the Doc (v2 — parsers are stubbed)
-- Render Drawings (no API access)
-- Recover voting counts perfectly when Google's markdown export omits the
-  chip rendering (some widgets in some contexts simply don't get rendered
-  — they're dropped from the cross-reference)
-- Extract images automatically on every pull (needs `--extract-assets`;
-  Drive image URLs rotate within hours so the no-extract path is best
-  effort)
-- Fetch Drive revisions older than Drive's compaction window — the API
-  truncates revision lists for frequently-edited Docs
+- **Push edits back to the Doc.** v1 is one-way. The on-disk format
+  preserves enough metadata that v2 can do round-trip, but the parsers
+  are stubbed.
+- **Render Drawings.** No Google API for them.
+- **Recover every vote count.** Google's markdown export sometimes omits
+  chip renderings (mid-table dropdowns, in particular). Affected chips
+  fall back to `[?]{.gd-chip data-kind="reaction"}` rather than guess
+  wrong.
+- **Reach revisions older than Drive's compaction window.** Drive truncates
+  the revision list for frequently-edited Docs. You get whatever Drive
+  decides to keep, which is usually the named/auto-saved milestones.
+- **Use stable image URLs.** Drive image URLs rotate within hours. Pass
+  `--extract-assets` to download images locally and rewrite links.
 
 ## Development
 
-```bash
-make test                # pytest (197 tests)
-make lint                # ruff
-make check               # lint + tests
+```sh
+make test     # 209 tests
+make lint     # ruff
+make check    # both
 ```
 
-Tests cover the full AST tree, both serializers, cross-emitter ID parity,
-the Docs JSON → AST builder against handcrafted fixtures, the
-markdown-export cross-reference for chip recovery, the replay timeline
-merger / state file / git wrapper, and the comment re-anchorer.
+Design spec: [`docs/superpowers/specs/2026-05-09-google-doc-diff-design.md`](docs/superpowers/specs/2026-05-09-google-doc-diff-design.md).
+
+Built one weekend with Claude Code on the user side. Tested live against a
+long meeting-notes doc with 80+ comment events; the chip / comment / replay
+parts were rough until they ran on real Doc-shaped chaos.
 
 ## License
 
-AGPL-3.0-or-later. See `LICENSE`.
+AGPL-3.0-or-later.
