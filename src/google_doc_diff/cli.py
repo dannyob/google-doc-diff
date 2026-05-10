@@ -12,6 +12,7 @@ import click
 
 from google_doc_diff import __version__
 from google_doc_diff.api import GdocAPI, parse_doc_id
+from google_doc_diff.assets import count_images, extract_image_assets, has_pua_widgets
 from google_doc_diff.ast.from_docs_json import build_document
 from google_doc_diff.auth import (
     AuthError,
@@ -123,7 +124,7 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
         html_path.write_text(emit_document_html(document))
         click.echo(f"wrote {html_path}")
 
-    image_count = _count_images(document)
+    image_count = count_images(document)
     if image_count and not extract_assets:
         click.echo(
             f"warning: {image_count} image URL(s) may rotate. For archival "
@@ -131,7 +132,12 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
             err=True,
         )
     elif extract_assets and image_count:
-        _extract_assets(document, out_path, api)
+        saved = extract_image_assets(
+            document, out_path, api,
+            on_error=lambda node, e: click.echo(f"image {node.image_id}: {e}", err=True),
+        )
+        if saved:
+            click.echo(f"extracted {saved} image(s) to {out_path.with_suffix('.assets')}/")
 
 
 # --- revisions -----------------------------------------------------------
@@ -454,15 +460,14 @@ def diff(doc, path, color):
 def _pull_rich_document(api, doc_id, *, chip_counts=True):
     """Shared rich-pull path used by gdoc pull / gdoc diff / gdoc fetch.
 
-    Fetches Docs JSON + Drive Comments, builds the AST, and (if chip_counts)
-    cross-references with the markdown export to recover chip emoji + counts.
-    Same content regardless of which command called it, so diffs are
-    apples-to-apples.
+    Fetches Docs JSON + Drive Comments, builds the AST, and (if chip_counts
+    and the AST contains PUA widget placeholders) cross-references with the
+    markdown export to recover chip emoji + counts.
     """
     docs_json = api.get_document(doc_id)
     comments_json = api.list_comments(doc_id)
     document = build_document(docs_json, comments_json)
-    if chip_counts:
+    if chip_counts and has_pua_widgets(document):
         from google_doc_diff.ast.chip_counts import attach_widget_renderings
         try:
             revs = api.list_revisions(doc_id)
@@ -471,7 +476,7 @@ def _pull_rich_document(api, doc_id, *, chip_counts=True):
                 md_text = api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
                 attach_widget_renderings(document, md_text)
         except Exception:
-            pass   # silent: chip recovery is best-effort
+            pass   # best-effort
     return document
 
 
@@ -503,71 +508,6 @@ def _slugify(s: str) -> str:
     s = s.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
     return s or "untitled"
-
-
-def _count_images(document) -> int:
-    from google_doc_diff.ast.nodes import Image
-
-    n = 0
-
-    def walk(node):
-        nonlocal n
-        if isinstance(node, Image):
-            n += 1
-        for attr in ("runs", "blocks", "rows", "cells", "children", "tabs"):
-            children = getattr(node, attr, None)
-            if children:
-                for c in children:
-                    walk(c)
-
-    for tab in document.tabs:
-        walk(tab)
-    return n
-
-
-def _extract_assets(document, md_path: Path, api: GdocAPI) -> None:
-    """Download every Image src into <md-stem>.assets/ and rewrite the AST.
-
-    NB: This rewrites the in-memory AST and the on-disk .md after the fact.
-    For now we just announce the count; full extraction is left to a follow-up
-    once we have a real test doc with images.
-    """
-    from google_doc_diff.ast.nodes import Image
-
-    assets_dir = md_path.with_suffix(".assets")
-    assets_dir.mkdir(parents=True, exist_ok=True)
-    saved = 0
-
-    def walk(node):
-        nonlocal saved
-        if isinstance(node, Image) and node.src.startswith("http"):
-            try:
-                blob = api.fetch_revision_export(node.src)
-                fname = f"{node.image_id}{_guess_ext(node.src)}"
-                (assets_dir / fname).write_bytes(blob)
-                node.src = f"{assets_dir.name}/{fname}"
-                saved += 1
-            except Exception as e:
-                click.echo(f"image {node.image_id}: {e}", err=True)
-        for attr in ("runs", "blocks", "rows", "cells", "children", "tabs"):
-            children = getattr(node, attr, None)
-            if children:
-                for c in children:
-                    walk(c)
-
-    for tab in document.tabs:
-        walk(tab)
-    if saved:
-        # Re-emit with updated image src values.
-        md_path.write_text(emit_document_md(document))
-        click.echo(f"extracted {saved} image(s) to {assets_dir}/")
-
-
-def _guess_ext(url: str) -> str:
-    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
-        if ext in url.lower():
-            return ext
-    return ".bin"
 
 
 def _colorize(line: str) -> str:

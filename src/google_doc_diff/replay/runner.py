@@ -19,7 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from google_doc_diff.api import GdocAPI
+from google_doc_diff.api import GdocAPI, drive_url_for
+from google_doc_diff.assets import extract_image_assets
 from google_doc_diff.ast.anchor_comments import anchor_comments
 from google_doc_diff.ast.chip_counts import attach_widget_renderings
 from google_doc_diff.ast.from_docs_json import build_document
@@ -46,16 +47,12 @@ class ReplayRunner:
         self.doc_id = doc_id
         self.opt = options
         self._md_cache: dict[str, str] = {}
-        self._current_docs_json: dict | None = None    # cached on first need
-        self._current_revision_id: str | None = None   # ditto
+        self._current_docs_json: dict | None = None
 
-    def _ensure_current_doc_loaded(self) -> str:
-        """Lazily fetch the current Doc JSON so we can detect when an event
-        is processing the head revision (and use the rich JSON path)."""
+    def _ensure_current_doc_loaded(self) -> dict:
         if self._current_docs_json is None:
             self._current_docs_json = self.api.get_document(self.doc_id)
-            self._current_revision_id = self._current_docs_json.get("revisionId", "")
-        return self._current_revision_id or ""
+        return self._current_docs_json
 
     # -- public ----------------------------------------------------------
 
@@ -67,21 +64,21 @@ class ReplayRunner:
     ) -> list[tuple[Event, str | None]]:
         """Run the timeline. Returns list of (event, git_sha-or-None).
 
-        After the loop completes, the runner overwrites the output file ONE
-        MORE time with the rich JSON-derived state — full chip metadata,
-        live suggestions, anything `gdoc pull` would return — but does NOT
-        commit it. So:
-            committed history (HEAD..) = faithful historical replay (lossy)
-            working tree                = the live doc as it is right now
-            git diff HEAD               = what's changed since the last
-                                          committed event
-        That separation lets suggestions live in the working tree (where
-        they belong as in-progress edits) without back-attributing them to
-        past replay points.
+        After the loop, overwrites the output file with the rich JSON-derived
+        live state (full chip metadata, suggestions intact) but does NOT
+        commit it. So HEAD = historical replay; working tree = live doc;
+        `git diff HEAD` = what's changed since the last replayed event.
         """
         results: list[tuple[Event, str | None]] = []
         latest_revision: str | None = None
         comment_state: dict[str, Comment] = {}
+
+        # Hoist current-doc fetch + title out of the per-event loop.
+        try:
+            self._ensure_current_doc_loaded()
+            title = (self._current_docs_json or {}).get("title", "")
+        except Exception:
+            title = ""
 
         for ev in events:
             if ev.kind == "prose_change":
@@ -96,7 +93,7 @@ class ReplayRunner:
                 continue
 
             md = self._fetch_revision_md(latest_revision, ev)
-            doc = self._build_event_document(md, ev, latest_revision, comment_state)
+            doc = self._build_event_document(md, ev, latest_revision, comment_state, title)
             self.opt.out_path.write_text(emit_document_md(doc))
 
             sha: str | None = None
@@ -106,23 +103,20 @@ class ReplayRunner:
             if on_event:
                 on_event(ev, sha)
 
-        # Final pass: write the rich live state to the working tree
-        # uncommitted. (Skipped if no event was processed.)
         if results:
             try:
                 self._write_rich_head_state()
             except Exception as e:
-                # Don't let live-state enrichment failure poison a replay
-                # that already succeeded on the historical side.
                 if on_event:
                     on_event(None, f"rich head state failed: {e}")
         return results
 
     def _write_rich_head_state(self) -> None:
-        """Overwrite the output file with the live doc's rich JSON state
-        (full chip metadata, suggestions intact). Does NOT commit."""
-        self._ensure_current_doc_loaded()
-        docs_json = self._current_docs_json or {}
+        """Overwrite the output file with the live doc's rich JSON state.
+        Reuses cached docs_json + cached markdown when available."""
+        from google_doc_diff.assets import has_pua_widgets
+
+        docs_json = self._ensure_current_doc_loaded()
         try:
             comments_json = self.api.list_comments(self.doc_id)
         except Exception:
@@ -130,53 +124,38 @@ class ReplayRunner:
         doc = build_document(
             docs_json,
             comments_json=comments_json,
-            drive_url=f"https://docs.google.com/document/d/{self.doc_id}/edit",
+            drive_url=drive_url_for(self.doc_id),
         )
         doc.source_mode = "pull"   # head state is identical to a fresh pull
-        # Recover chip renderings via the markdown export cross-reference.
-        try:
-            revs = self.api.list_revisions(self.doc_id)
-            if revs:
-                md_url = (revs[-1].get("exportLinks") or {}).get("text/markdown")
-                if md_url:
-                    md = self.api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
-                    attach_widget_renderings(doc, md)
-        except Exception:
-            pass
-        self.opt.out_path.write_text(emit_document_md(doc))
-        if self.opt.extract_assets:
-            self._extract_assets_for(doc)
-
-    def _extract_assets_for(self, doc) -> None:
-        """Download every Image's src into <out>.assets/ and rewrite the AST."""
-        from google_doc_diff.ast.nodes import Image
-
-        assets_dir = self.opt.out_path.with_suffix(".assets")
-        assets_dir.mkdir(parents=True, exist_ok=True)
-        saved = 0
-
-        def walk(node):
-            nonlocal saved
-            if isinstance(node, Image) and node.src.startswith("http"):
+        if has_pua_widgets(doc):
+            md = self._head_revision_md()
+            if md is not None:
                 try:
-                    blob = self.api.fetch_revision_export(node.src)
-                    ext = _guess_ext(node.src)
-                    fname = f"{node.image_id}{ext}"
-                    (assets_dir / fname).write_bytes(blob)
-                    node.src = f"{assets_dir.name}/{fname}"
-                    saved += 1
+                    attach_widget_renderings(doc, md)
                 except Exception:
                     pass
-            for attr in ("runs", "blocks", "rows", "cells", "children", "tabs"):
-                children = getattr(node, attr, None)
-                if children:
-                    for c in children:
-                        walk(c)
+        self.opt.out_path.write_text(emit_document_md(doc))
+        if self.opt.extract_assets:
+            extract_image_assets(doc, self.opt.out_path, self.api)
 
-        for tab in doc.tabs:
-            walk(tab)
-        if saved:
-            self.opt.out_path.write_text(emit_document_md(doc))
+    def _head_revision_md(self) -> str | None:
+        """Return the markdown export of the head revision, reusing the
+        per-revision cache if the head was already fetched during the loop."""
+        head_rev_id = (self._current_docs_json or {}).get("revisionId")
+        if head_rev_id and head_rev_id in self._md_cache:
+            return self._md_cache[head_rev_id]
+        try:
+            revs = self.api.list_revisions(self.doc_id)
+            if not revs:
+                return None
+            md_url = (revs[-1].get("exportLinks") or {}).get("text/markdown")
+            if not md_url:
+                return None
+            text = self.api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
+            self._md_cache[revs[-1]["id"]] = text
+            return text
+        except Exception:
+            return None
 
     # -- helpers ----------------------------------------------------------
 
@@ -206,15 +185,8 @@ class ReplayRunner:
         ev: Event,
         revision_id: str,
         comment_state: dict[str, Comment],
+        title: str,
     ) -> Document:
-        # Use the live doc's title (so historical replays don't pick up
-        # spurious "first heading" titles from their content). Cheap because
-        # _ensure_current_doc_loaded caches.
-        try:
-            self._ensure_current_doc_loaded()
-            title = (self._current_docs_json or {}).get("title", "")
-        except Exception:
-            title = ""
         doc = build_from_google_md(
             md,
             doc_id=self.doc_id,
@@ -224,7 +196,7 @@ class ReplayRunner:
             last_modifying_user=ev.author,
             source_mode="replay",
         )
-        doc.drive_url = f"https://docs.google.com/document/d/{self.doc_id}/edit"
+        doc.drive_url = drive_url_for(self.doc_id)
         if self.opt.include_comments:
             doc.comments = {cid: c for cid, c in comment_state.items() if not c.deleted}
             doc.comments_preserved = True
@@ -324,10 +296,3 @@ def _split_author(author: str) -> tuple[str, str]:
     if "@" in author and "<" not in author:
         return author.split("@")[0], author
     return author, author
-
-
-def _guess_ext(url: str) -> str:
-    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
-        if ext in url.lower():
-            return ext
-    return ".bin"

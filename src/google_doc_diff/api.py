@@ -31,6 +31,11 @@ class APIError(RuntimeError):
 _BARE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 
 
+def drive_url_for(doc_id: str) -> str:
+    """Canonical Drive URL for a Google Doc by ID. Inverse of `parse_doc_id`."""
+    return f"https://docs.google.com/document/d/{doc_id}/edit"
+
+
 def parse_doc_id(s: str) -> str:
     """Accept either a bare doc ID or a Google Docs / Drive URL.
 

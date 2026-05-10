@@ -2,7 +2,7 @@
 
 import pytest
 
-from google_doc_diff.api import APIError, parse_doc_id
+from google_doc_diff.api import APIError, drive_url_for, parse_doc_id
 
 
 @pytest.mark.parametrize("inp,expected", [
@@ -24,3 +24,7 @@ def test_parse_doc_id(inp, expected):
 def test_parse_doc_id_raises_on_garbage():
     with pytest.raises(APIError):
         parse_doc_id("not a url and too short")
+
+
+def test_drive_url_for_canonical():
+    assert drive_url_for("ABC123") == "https://docs.google.com/document/d/ABC123/edit"

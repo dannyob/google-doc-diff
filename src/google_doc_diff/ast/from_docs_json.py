@@ -65,7 +65,8 @@ def build_document(
     title = docs_json.get("title", "")
     revision_id = docs_json.get("revisionId", "")
     if not drive_url:
-        drive_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+        from google_doc_diff.api import drive_url_for
+        drive_url = drive_url_for(doc_id)
     if not captured_at:
         captured_at = datetime.now(UTC)
 
@@ -572,7 +573,7 @@ def _classify_rich_link(mime_type: str) -> str:
 # Private Use Area codepoint (U+E907) inside textRun.content — the actual
 # emoji + count for each chip live ONLY in Drive's rendered markdown export,
 # not in the Docs API JSON. We emit a placeholder SmartChip(kind='reaction')
-# at the JSON-build stage and let chip_counts.attach_counts_to_chips fill in
+# at the JSON-build stage and let chip_counts.attach_widget_renderings fill in
 # the emoji + count via the markdown cross-reference.
 
 

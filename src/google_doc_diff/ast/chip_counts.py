@@ -1,24 +1,10 @@
-"""Recover the rendered content of inline widgets (voting chips, dropdowns,
+"""Recover rendered content of inline widgets (votes, reactions, dropdowns,
 date chips, etc.) by cross-referencing Google's markdown export.
 
-Google Docs encodes a wide range of inline widgets — voting chips, reaction
-chips, dropdown chips, date chips, button chips, file chips, place chips,
-calendar event chips — as a single Private Use Area codepoint (U+E907) in
-textRun.content. The Docs API JSON has the marker but NOTHING about what
-widget it is or what value it holds. The rendered markdown / HTML export
-shows the resolved value: '(➕ 3)' for a thumbs-up vote, '(❤️ 0)' for a
-reaction, 'Standard White (#FFFFFF)' for a dropdown, 'Mon, Jan 5' for a
-date chip, etc.
-
-Strategy: walk the AST in document order while sliding a position pointer
-through the markdown export. For each widget:
-  1. Use the preceding paragraph text (or previous block's tail) as a sync
-     anchor: if found in the markdown after the current pointer, advance.
-  2. Capture whatever Google rendered immediately after the anchor (or
-     from the current pointer if no anchor available), bounded by the next
-     newline, table cell boundary, or — for chips that come right after a
-     blank line — by skipping the blank line first.
-  3. Classify the rendered text heuristically (vote/reaction/dropdown/etc).
+Docs encodes every API-invisible inline widget as a single PUA codepoint
+(U+E907) in textRun.content. The markdown export shows the resolved value
+('(➕ 3)', 'Standard White (#FFFFFF)', etc.); we walk the AST and stream
+through the export, anchored on surrounding paragraph text.
 """
 
 from __future__ import annotations
@@ -41,16 +27,15 @@ def attach_widget_renderings(doc: Document, md: str) -> int:
         else:
             idx = md_norm.find(anchor, pos)
             if idx >= 0:
-                # Anchor found ahead — advance past it.
                 new_pos = idx + len(anchor)
                 last_seen_anchor = anchor
             elif anchor == last_seen_anchor:
-                # Anchor isn't ahead but matches the previous chip's anchor:
-                # we're in the same context, just continue from current pos.
+                # Same context as the previous chip; continue from current pos
+                # rather than re-search.
                 new_pos = pos
             else:
-                # Anchor was given but never matched here. Skip rather than
-                # risk attaching the wrong rendering.
+                # Novel anchor not found ahead — skip rather than risk
+                # attaching the wrong rendering.
                 continue
         rendered, end = _capture_widget(md_norm, new_pos)
         if not rendered:
@@ -66,24 +51,6 @@ def attach_widget_renderings(doc: Document, md: str) -> int:
         pos = end
         resolved += 1
     return resolved
-
-
-# Backwards-compatible alias.
-attach_counts_to_chips = attach_widget_renderings
-
-
-def _maybe_advance(md: str, pos: int, preceding: str) -> tuple[int, bool]:
-    """Returns (new_pos, ok). ok=False means the caller passed an anchor
-    that wasn't found — skip this chip rather than capture from current
-    position (which would attach the wrong rendering)."""
-    needle = (preceding or "")[-40:].strip()
-    if not needle:
-        return pos, True
-    needle = _normalize(needle)
-    idx = md.find(needle, pos)
-    if idx < 0:
-        return pos, False
-    return idx + len(needle), True
 
 
 _INLINE_SKIP = set(" \t\n\\*_")
