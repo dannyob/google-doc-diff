@@ -371,6 +371,43 @@ def test_unknown_rich_link_mime_falls_back_to_generic_kind():
     assert chip.kind == "richlink"
 
 
+def test_inline_objects_resolved_from_per_tab_map():
+    """Multi-tab docs nest inlineObjects under each documentTab, not at the
+    top level. Regression for: 49 images on a real doc were all silently
+    suppressed because the walker only checked top-level inlineObjects."""
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "inlineObjects": {},   # empty at top level — typical for tabbed docs
+        "tabs": [{
+            "tabProperties": {"tabId": "T1", "title": "Notes"},
+            "documentTab": {
+                "inlineObjects": {
+                    "kix.img1": {"inlineObjectProperties": {"embeddedObject": {
+                        "imageProperties": {"contentUri": "https://x/img1.png"},
+                        "size": {
+                            "width": {"magnitude": 200},
+                            "height": {"magnitude": 100},
+                        },
+                    }}},
+                },
+                "body": {"content": [{"paragraph": {
+                    "elements": [
+                        {"textRun": {"content": "Before "}},
+                        {"inlineObjectElement": {"inlineObjectId": "kix.img1"}},
+                        {"textRun": {"content": " after"}},
+                    ],
+                }}]},
+            },
+        }],
+    }
+    doc = build_document(j)
+    runs = doc.tabs[0].blocks[0].runs
+    images = [r for r in runs if hasattr(r, "image_id")]
+    assert len(images) == 1
+    assert images[0].image_id == "kix.img1"
+    assert images[0].src == "https://x/img1.png"
+
+
 def test_dangling_inline_object_element_is_suppressed():
     """When an inlineObjectElement points to no inlineObject (decorative chip
     icon), it should be dropped from the AST, not crash or emit a broken

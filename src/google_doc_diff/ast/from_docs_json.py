@@ -90,7 +90,7 @@ def build_document(
         footnotes=builder.footnotes,
         named_styles=_build_named_styles(docs_json),
         list_definitions=_build_list_definitions(docs_json),
-        inline_objects=docs_json.get("inlineObjects", {}),
+        inline_objects=builder.inline_objects,
         css_classes=builder.css_classes,
     )
     return anchor_comments(document)
@@ -246,6 +246,15 @@ class _DocBuilder:
         self.footnotes: dict[str, Footnote] = {}
         self.css_classes: dict[str, str] = {}
         self._named_style_dicts = _build_named_styles(docs_json)
+        # Multi-tab docs nest inlineObjects (and lists) under each
+        # documentTab rather than at the top level. Merge everything into a
+        # single lookup so the inline-element walker always finds them.
+        self.inline_objects: dict = dict(docs_json.get("inlineObjects") or {})
+        self.lists: dict = dict(docs_json.get("lists") or {})
+        for tab in _iter_doc_tabs(docs_json.get("tabs") or []):
+            dt = tab.get("documentTab", {})
+            self.inline_objects.update(dt.get("inlineObjects") or {})
+            self.lists.update(dt.get("lists") or {})
 
     def build_tabs(self) -> list[Tab]:
         tabs_data = self.docs_json.get("tabs")
@@ -346,7 +355,7 @@ class _DocBuilder:
 
     def _infer_list_kind(self, list_id: str, level: int) -> str:
         """'bulleted' or 'ordered' based on glyphType in the list definition."""
-        ldef = (self.docs_json.get("lists") or {}).get(list_id, {})
+        ldef = self.lists.get(list_id, {})
         nesting_levels = (ldef.get("listProperties") or {}).get("nestingLevels", [])
         if level < len(nesting_levels):
             glyph_type = nesting_levels[level].get("glyphType")
@@ -391,10 +400,10 @@ class _DocBuilder:
         if "inlineObjectElement" in el:
             ioe = el["inlineObjectElement"]
             obj_id = ioe.get("inlineObjectId", "")
-            obj = (self.docs_json.get("inlineObjects") or {}).get(obj_id, {})
+            obj = self.inline_objects.get(obj_id, {})
             if not obj:
-                # Dangling inlineObjectElement: typically the decorative icon
-                # rendered next to a richLink/dateElement chip. Suppress.
+                # Truly dangling: typically the decorative icon rendered
+                # next to a richLink/dateElement chip. Suppress.
                 return
             yield self._build_image(obj_id, obj)
             return
@@ -599,6 +608,15 @@ def _split_chips(text: str, descriptor: StyleDescriptor) -> list:
 
 
 # --- helpers (also used by tests) ---------------------------------------
+
+
+def _iter_doc_tabs(tabs: list):
+    """Yield every tab dict in document order, recursing into child tabs."""
+    for tab in tabs:
+        yield tab
+        children = tab.get("childTabs") or []
+        if children:
+            yield from _iter_doc_tabs(children)
 
 
 def _hash8(s: str) -> str:
