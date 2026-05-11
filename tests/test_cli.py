@@ -152,13 +152,24 @@ def test_reconcile_tolerates_committed_event_vanishing():
     assert ok
 
 
-def test_reconcile_rejects_when_committed_event_changes_author():
+def test_reconcile_tolerates_committed_event_changing_author():
+    """Drive returns inconsistent lastModifyingUser values for the same
+    revision id (spec-documented best-effort behavior). A flaky author
+    shouldn't force --restart."""
     t = datetime(2026, 5, 1, tzinfo=UTC)
-    saved = _state([_state_evt("rev-1", "prose_change", t, "a@x")])
-    new = [_ev("rev-1", "prose_change", t, "b@y")]
+    saved = _state([_state_evt("rev-1", "prose_change", t, "julian")])
+    new = [_ev("rev-1", "prose_change", t, "orjan")]
+    ok, _ = _can_reconcile(saved, new)
+    assert ok
+
+
+def test_reconcile_rejects_when_committed_event_changes_kind():
+    t = datetime(2026, 5, 1, tzinfo=UTC)
+    saved = _state([_state_evt("c-1", "comment_create", t, "a@x")])
+    new = [_ev("c-1", "reply_resolve", t, "a@x")]
     ok, reason = _can_reconcile(saved, new)
     assert not ok
-    assert "author" in reason
+    assert "kind" in reason
 
 
 def test_reconcile_ignores_uncommitted_event_drift():
