@@ -175,8 +175,9 @@ def revisions(doc, fmt):
 @click.option("--until", help="ISO timestamp; only events at or before this time.")
 @click.option("--out", type=click.Path(path_type=Path),
               help="Output Markdown path overwritten on each event.")
-@click.option("--commit", is_flag=True,
-              help="Create one git commit per event in the cwd.")
+@click.option("--commit/--no-commit", default=True,
+              help="Create one git commit per event in the cwd (default). "
+                   "Pass --no-commit to write the file without touching git.")
 @click.option("--squash-by-author", default=None,
               help="Coalesce adjacent same-author prose events within DURATION (e.g. 5m, 2h).")
 @click.option("--include-comments/--no-include-comments", default=True,
@@ -257,16 +258,22 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     out_path = out or Path(_slugify(doc_id) + ".md")
 
     if commit:
-        # The state file itself is always changing during replay; same with
-        # the output .md (we're about to overwrite it on each event). Both
-        # are expected-dirty.
+        if not (cwd / ".git").exists():
+            click.echo(
+                f"{cwd} is not a git repository. Run `git init` first, or "
+                "pass --no-commit to write the file without committing.",
+                err=True,
+            )
+            sys.exit(2)
+        # State file + the in-flight output .md are expected-dirty.
         ignore = [".gdoc-replay-state.json"]
         try:
             ignore.append(str(out_path.relative_to(cwd)))
         except ValueError:
             pass
         if not gitwrap.is_clean(cwd, ignore=ignore):
-            click.echo("git working tree is dirty; commit or stash first.", err=True)
+            click.echo("git working tree is dirty; commit or stash first, or "
+                       "pass --no-commit.", err=True)
             sys.exit(2)
 
     if dry_run:

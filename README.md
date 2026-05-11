@@ -63,11 +63,11 @@ gdoc auth login --import-gog-token /tmp/gogtoken.json
 
 ## Replay: HEAD = history, working tree = the live doc
 
-The unusual command is `gdoc replay --commit`. It walks every revision and
-every comment / reply / resolve / reopen event in chronological order and
-makes one git commit per event, preserving the original author and
-timestamp. After the loop, it overwrites the file one more time with the
-rich live state from the Docs API but leaves it **uncommitted**. So:
+The unusual command is `gdoc replay`. It walks every revision and every
+comment / reply / resolve / reopen event in chronological order and makes
+one git commit per event, preserving the original author and timestamp.
+After the loop, it overwrites the file one more time with the rich live
+state from the Docs API but leaves it **uncommitted**. So:
 
 ```
 HEAD                = the historical replay (committed)
@@ -79,7 +79,7 @@ gdoc fetch          = refresh the working tree without re-walking history
 Sample run on a heavily-commented planning doc, scoped to the last 36 hours:
 
 ```sh
-$ gdoc replay $DOC --out doc.md --commit --since 2026-08-10T00:00:00Z --squash-by-author 5m
+$ gdoc replay $DOC --out doc.md --since 2026-08-10T00:00:00Z --squash-by-author 5m
   prose_change   2026-08-10T00:05:39+00:00  961bfac...
   comment_create 2026-08-10T15:11:03+00:00  93ad269...
   reply_create   2026-08-10T15:11:14+00:00  4a5e9bc...
