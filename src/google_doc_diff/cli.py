@@ -246,11 +246,11 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     new_hash = timeline_hash(events)
 
     if existing and resume:
-        if existing.timeline_hash != new_hash:
+        ok, reason = _can_reconcile(existing, events)
+        if not ok:
             click.echo(
-                "Timeline hash mismatch (revisions or comments changed since "
-                "the interrupted run). Pass --restart to discard, or revert "
-                "the upstream changes.",
+                f"Cannot resume: {reason}. Pass --restart to discard the saved "
+                "state and start over.",
                 err=True,
             )
             sys.exit(2)
@@ -284,9 +284,34 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
             )
         return
 
-    # Build / reuse state file.
+    # Build / reuse state file. On resume, carry per-event status from
+    # the saved state forward into the (possibly-extended) new timeline.
     if existing and resume:
-        state = existing
+        prior = {e.id: e for e in existing.events}
+        merged_events: list[EventState] = []
+        for ev in events:
+            d = event_to_state_dict(ev)
+            saved = prior.get(ev.event_id)
+            if saved:
+                d["status"] = saved.status
+                d["git_sha"] = saved.git_sha
+            merged_events.append(EventState(**d))
+        state = ReplayState(
+            doc_id=existing.doc_id,
+            out_path=existing.out_path,
+            extract_assets=existing.extract_assets,
+            include_comments=existing.include_comments,
+            since=existing.since, until=existing.until,
+            timeline_hash=new_hash,
+            events=merged_events,
+        )
+        new_count = sum(1 for e in events if e.event_id not in prior)
+        if new_count:
+            click.echo(
+                f"resuming: {new_count} new event(s) appeared upstream since "
+                "the last run."
+            )
+        write_state(state, cwd)
     else:
         state = ReplayState(
             doc_id=doc_id, out_path=str(out_path),
@@ -471,6 +496,32 @@ def diff(doc, path, color):
 
 
 # --- helpers --------------------------------------------------------------
+
+
+def _can_reconcile(existing, new_events):
+    """Decide whether a saved replay state can be reused against a freshly-
+    computed timeline. Returns (ok, reason).
+
+    Conservative rule: every COMMITTED event in the saved state must still
+    appear in the new timeline with the same kind/timestamp/author. Purely-
+    additive drift (new events appended upstream since the last run) is
+    fine. Anything else — a committed event's metadata changed, a committed
+    event vanished — is a real conflict and we bail.
+    """
+    new_by_id = {ev.event_id: ev for ev in new_events}
+    for est in existing.events:
+        if est.status != "committed":
+            continue
+        cur = new_by_id.get(est.id)
+        if cur is None:
+            return False, f"committed event {est.id} no longer in the upstream timeline"
+        if cur.kind != est.kind:
+            return False, f"event {est.id} changed kind ({est.kind} → {cur.kind})"
+        if cur.timestamp.isoformat() != est.timestamp:
+            return False, f"event {est.id} changed timestamp"
+        if cur.author != est.author:
+            return False, f"event {est.id} changed author ({est.author} → {cur.author})"
+    return True, ""
 
 
 def _pull_rich_document(api, doc_id, *, chip_counts=True):

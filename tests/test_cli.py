@@ -1,6 +1,15 @@
 """Tests for top-level CLI commands."""
 
-from google_doc_diff.cli import _slugify, _strip_volatile_frontmatter, cli
+from datetime import UTC, datetime
+
+from google_doc_diff.cli import (
+    _can_reconcile,
+    _slugify,
+    _strip_volatile_frontmatter,
+    cli,
+)
+from google_doc_diff.replay.state import EventState, ReplayState
+from google_doc_diff.replay.timeline import Event
 
 
 def test_version(runner):
@@ -85,3 +94,75 @@ def test_strip_volatile_frontmatter_preserves_real_content_diffs():
 def test_strip_volatile_frontmatter_no_frontmatter_passthrough():
     md = "no frontmatter here\n"
     assert _strip_volatile_frontmatter(md) == md
+
+
+# --- _can_reconcile ---------------------------------------------------------
+
+
+def _ev(ev_id, kind, ts, author):
+    return Event(kind=kind, timestamp=ts, author=author,
+                 revision_id=ev_id.removeprefix("rev-") if ev_id.startswith("rev-") else None,
+                 comment_id=ev_id if ev_id.startswith("c-") else None)
+
+
+def _state_evt(ev_id, kind, ts, author, status="committed"):
+    return EventState(id=ev_id, kind=kind, timestamp=ts.isoformat(),
+                      author=author, status=status)
+
+
+def _state(events):
+    return ReplayState(doc_id="X", out_path="d.md",
+                       extract_assets=False, include_comments=True,
+                       since=None, until=None, timeline_hash="sha:old",
+                       events=events)
+
+
+def test_reconcile_accepts_identical_timeline():
+    t = datetime(2026, 5, 1, tzinfo=UTC)
+    saved = _state([_state_evt("rev-1", "prose_change", t, "a@x")])
+    new = [_ev("rev-1", "prose_change", t, "a@x")]
+    ok, _ = _can_reconcile(saved, new)
+    assert ok
+
+
+def test_reconcile_accepts_purely_additive_timeline():
+    """Old committed events still match; new events appended upstream."""
+    t = datetime(2026, 5, 1, tzinfo=UTC)
+    saved = _state([_state_evt("rev-1", "prose_change", t, "a@x")])
+    new = [
+        _ev("rev-1", "prose_change", t, "a@x"),
+        _ev("c-new", "comment_create", datetime(2026, 5, 2, tzinfo=UTC), "b@y"),
+    ]
+    ok, _ = _can_reconcile(saved, new)
+    assert ok
+
+
+def test_reconcile_rejects_when_committed_event_vanishes():
+    t = datetime(2026, 5, 1, tzinfo=UTC)
+    saved = _state([_state_evt("c-deleted", "comment_create", t, "a@x")])
+    new = []
+    ok, reason = _can_reconcile(saved, new)
+    assert not ok
+    assert "c-deleted" in reason
+
+
+def test_reconcile_rejects_when_committed_event_changes_author():
+    t = datetime(2026, 5, 1, tzinfo=UTC)
+    saved = _state([_state_evt("rev-1", "prose_change", t, "a@x")])
+    new = [_ev("rev-1", "prose_change", t, "b@y")]
+    ok, reason = _can_reconcile(saved, new)
+    assert not ok
+    assert "author" in reason
+
+
+def test_reconcile_ignores_uncommitted_event_drift():
+    """Pending/failed events can drift freely — we only enforce that
+    already-committed events are unchanged."""
+    t = datetime(2026, 5, 1, tzinfo=UTC)
+    saved = _state([
+        _state_evt("rev-1", "prose_change", t, "a@x", status="committed"),
+        _state_evt("c-pending", "comment_create", t, "a@x", status="failed"),
+    ])
+    new = [_ev("rev-1", "prose_change", t, "a@x")]  # c-pending vanished
+    ok, _ = _can_reconcile(saved, new)
+    assert ok
