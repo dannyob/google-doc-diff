@@ -503,14 +503,14 @@ def _can_reconcile(existing, new_events):
     computed timeline. Returns (ok, reason).
 
     Rule: any committed event that STILL exists in the new timeline must
-    have unchanged kind and timestamp. We do NOT check author: Google's
-    Drive API returns inconsistent lastModifyingUser values for the same
-    revision id across calls (documented as best-effort in the spec), and
-    a flaky author field shouldn't force --restart. Tolerated drift:
+    have an unchanged timestamp. Tolerated drift:
       - new events appended upstream → folded in as pending
       - committed events vanished upstream → kept as local commit, dropped
         from the state file (Drive's revision compaction is routine)
-      - author changed for a committed event → silently kept
+      - author changed for a committed event → silently kept (Drive returns
+        inconsistent lastModifyingUser values across calls)
+      - kind drift can't happen in practice: event_id encodes the kind for
+        replies, and a revision id always corresponds to a prose_change
     """
     new_by_id = {ev.event_id: ev for ev in new_events}
     for est in existing.events:
@@ -519,8 +519,6 @@ def _can_reconcile(existing, new_events):
         cur = new_by_id.get(est.id)
         if cur is None:
             continue   # gone from upstream; local commit is the record
-        if cur.kind != est.kind:
-            return False, f"event {est.id} changed kind ({est.kind} → {cur.kind})"
         if cur.timestamp.isoformat() != est.timestamp:
             return False, f"event {est.id} changed timestamp"
     return True, ""

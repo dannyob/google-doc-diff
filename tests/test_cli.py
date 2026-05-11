@@ -163,13 +163,16 @@ def test_reconcile_tolerates_committed_event_changing_author():
     assert ok
 
 
-def test_reconcile_rejects_when_committed_event_changes_kind():
-    t = datetime(2026, 5, 1, tzinfo=UTC)
-    saved = _state([_state_evt("c-1", "comment_create", t, "a@x")])
-    new = [_ev("c-1", "reply_resolve", t, "a@x")]
+def test_reconcile_rejects_when_committed_event_changes_timestamp():
+    saved = _state([_state_evt(
+        "rev-1", "prose_change",
+        datetime(2026, 5, 1, tzinfo=UTC), "a@x",
+    )])
+    new = [_ev("rev-1", "prose_change",
+               datetime(2026, 5, 2, tzinfo=UTC), "a@x")]
     ok, reason = _can_reconcile(saved, new)
     assert not ok
-    assert "kind" in reason
+    assert "timestamp" in reason
 
 
 def test_reconcile_ignores_uncommitted_event_drift():
