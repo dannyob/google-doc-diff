@@ -307,19 +307,28 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     pending: list = []
     pending_states: list[EventState] = []
     for ev, est in zip(events, state.events, strict=True):
+        # 'committed' = done; everything else (pending, failed) gets retried.
         if est.status == "committed":
             continue
         pending.append(ev)
         pending_states.append(est)
 
     def _on_event(ev, sha):
+        # ev=None signals a non-event message from the runner (e.g.
+        # "rich head state failed"); just print and bail.
+        if ev is None:
+            click.echo(f"  {sha}", err=True)
+            return
+        skipped = isinstance(sha, str) and sha.startswith("(skipped")
+        new_status = "failed" if skipped else "committed"
         for est in state.events:
             if est.id == ev.event_id and est.status != "committed":
-                est.status = "committed"
-                est.git_sha = sha
+                est.status = new_status
+                est.git_sha = None if skipped else sha
                 break
         write_state(state, cwd)
-        click.echo(f"  {ev.kind:<14} {ev.timestamp.isoformat()}  {sha or '(no commit)'}")
+        marker = sha if isinstance(sha, str) else (sha or "(no commit)")
+        click.echo(f"  {ev.kind:<14} {ev.timestamp.isoformat()}  {marker}")
 
     runner.execute(pending, on_event=_on_event)
     click.echo(

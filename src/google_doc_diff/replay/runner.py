@@ -92,9 +92,21 @@ class ReplayRunner:
                     on_event(ev, None)
                 continue
 
-            md = self._fetch_revision_md(latest_revision, ev)
-            doc = self._build_event_document(md, ev, latest_revision, comment_state, title)
-            self.opt.out_path.write_text(emit_document_md(doc))
+            try:
+                md = self._fetch_revision_md(latest_revision, ev)
+                doc = self._build_event_document(
+                    md, ev, latest_revision, comment_state, title,
+                )
+                self.opt.out_path.write_text(emit_document_md(doc))
+            except Exception as e:
+                # A single transient failure (e.g. Google's export endpoint
+                # returning 500 for one revision after retries) shouldn't
+                # kill an otherwise-successful replay. Skip this event with
+                # a marker and continue; --resume can retry it later.
+                results.append((ev, None))
+                if on_event:
+                    on_event(ev, f"(skipped: {e})")
+                continue
 
             sha: str | None = None
             if self.opt.commit:

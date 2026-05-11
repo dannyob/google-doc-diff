@@ -132,8 +132,10 @@ class GdocAPI:
             "User-Agent": USER_AGENT,
         }
         r = requests.get(url, headers=headers, timeout=30)
-        if r.status_code == 429:
-            raise _RateLimited(r.headers.get("Retry-After"))
+        if r.status_code == 429 or 500 <= r.status_code < 600:
+            # Google's export endpoint flakes with transient 5xx errors;
+            # treat them like rate-limiting and retry.
+            raise _Transient(r.status_code, r.headers.get("Retry-After"))
         if r.status_code >= 400:
             raise APIError(f"HTTP {r.status_code} from {url}: {r.text[:200]}")
         return r.content
@@ -160,10 +162,13 @@ class GdocAPI:
         for attempt in range(5):
             try:
                 return fn(*args)
-            except _RateLimited as e:
+            except _Transient as e:
                 last = e
                 self._sleep_for_attempt(attempt)
-        raise APIError("too many 429s on raw HTTP fetch") from last
+        status = getattr(last, "status_code", "?")
+        raise APIError(
+            f"raw HTTP fetch gave up after 5 attempts (last status {status})"
+        ) from last
 
     @staticmethod
     def _sleep_for_attempt(attempt: int) -> None:
@@ -172,6 +177,7 @@ class GdocAPI:
         time.sleep(base + jitter)
 
 
-class _RateLimited(Exception):
-    def __init__(self, retry_after: str | None):
+class _Transient(Exception):
+    def __init__(self, status_code: int, retry_after: str | None = None):
+        self.status_code = status_code
         self.retry_after = retry_after
