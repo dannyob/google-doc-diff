@@ -502,11 +502,12 @@ def _can_reconcile(existing, new_events):
     """Decide whether a saved replay state can be reused against a freshly-
     computed timeline. Returns (ok, reason).
 
-    Conservative rule: every COMMITTED event in the saved state must still
-    appear in the new timeline with the same kind/timestamp/author. Purely-
-    additive drift (new events appended upstream since the last run) is
-    fine. Anything else — a committed event's metadata changed, a committed
-    event vanished — is a real conflict and we bail.
+    Rule: any committed event that STILL exists in the new timeline must
+    have unchanged kind/timestamp/author. Anything else is fine:
+      - new events appended upstream → fold them in as pending
+      - committed events that vanished upstream → keep the local commit and
+        drop the state entry (Drive's revision compaction does this routinely;
+        comments can be deleted; not a conflict)
     """
     new_by_id = {ev.event_id: ev for ev in new_events}
     for est in existing.events:
@@ -514,7 +515,7 @@ def _can_reconcile(existing, new_events):
             continue
         cur = new_by_id.get(est.id)
         if cur is None:
-            return False, f"committed event {est.id} no longer in the upstream timeline"
+            continue   # gone from upstream; local commit is the record
         if cur.kind != est.kind:
             return False, f"event {est.id} changed kind ({est.kind} → {cur.kind})"
         if cur.timestamp.isoformat() != est.timestamp:

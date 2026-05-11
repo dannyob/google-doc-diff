@@ -137,13 +137,19 @@ def test_reconcile_accepts_purely_additive_timeline():
     assert ok
 
 
-def test_reconcile_rejects_when_committed_event_vanishes():
+def test_reconcile_tolerates_committed_event_vanishing():
+    """Drive compaction routinely drops historical revisions; the local
+    commit is still the record. Comments may be deleted upstream similarly.
+    Neither should require --restart."""
     t = datetime(2026, 5, 1, tzinfo=UTC)
-    saved = _state([_state_evt("c-deleted", "comment_create", t, "a@x")])
-    new = []
-    ok, reason = _can_reconcile(saved, new)
-    assert not ok
-    assert "c-deleted" in reason
+    saved = _state([
+        _state_evt("rev-1", "prose_change", t, "a@x"),
+        _state_evt("rev-128871", "prose_change",
+                   datetime(2026, 5, 2, tzinfo=UTC), "a@x"),
+    ])
+    new = [_ev("rev-1", "prose_change", t, "a@x")]   # rev-128871 compacted away
+    ok, _ = _can_reconcile(saved, new)
+    assert ok
 
 
 def test_reconcile_rejects_when_committed_event_changes_author():
