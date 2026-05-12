@@ -27,6 +27,15 @@ REQUIRED_SCOPES = [
 ]
 
 
+def _is_useful_scope(scope: str) -> bool:
+    """Filter out OIDC / identity scopes we don't use. Keeps anything under
+    /auth/drive*, /auth/documents*, /auth/spreadsheets*, /auth/presentations*."""
+    return any(s in scope for s in (
+        "/auth/drive", "/auth/documents",
+        "/auth/spreadsheets", "/auth/presentations",
+    ))
+
+
 class AuthError(RuntimeError):
     """Raised for any auth setup or refresh failure."""
 
@@ -77,7 +86,11 @@ def load_credentials(
         "refresh_token": token["refresh_token"],
         "token_uri": "https://oauth2.googleapis.com/token",
     }
-    creds = Credentials.from_authorized_user_info(info, scopes=token.get("scopes"))
+    # Drop scopes we don't actually use (e.g. gog stores 'email', 'openid',
+    # 'userinfo.email' alongside drive/docs; passing those triggers a
+    # 'missing scopes email' warning from google-auth on every refresh).
+    scopes = [s for s in (token.get("scopes") or []) if _is_useful_scope(s)]
+    creds = Credentials.from_authorized_user_info(info, scopes=scopes or None)
     if not creds.valid:
         try:
             creds.refresh(Request())
