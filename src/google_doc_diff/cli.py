@@ -24,6 +24,45 @@ from google_doc_diff.auth import (
 from google_doc_diff.emit import emit_document_html, emit_document_md
 
 
+def resolve_doc_target(s: str) -> tuple[str, Path | None]:
+    """Resolve a positional DOC argument to (doc_id, path_hint).
+
+    Accepts any of:
+      - A bare Drive doc ID
+      - A Google Docs / Drive URL
+      - A path to an existing local .md file (pulled or replayed earlier);
+        the file's YAML frontmatter must carry `doc_id: ...`.
+
+    Returns (doc_id, path_hint). `path_hint` is the local file path when the
+    argument was a file (so commands can default --out to the same path);
+    None otherwise.
+    """
+    p = Path(s)
+    if p.is_file() and p.suffix in (".md", ".markdown"):
+        doc_id = _read_doc_id_from_frontmatter(p)
+        if doc_id:
+            return doc_id, p
+        raise click.ClickException(
+            f"{p} is a markdown file but has no `doc_id:` in its YAML frontmatter; "
+            "pass a doc ID or URL instead."
+        )
+    return parse_doc_id(s), None
+
+
+def _read_doc_id_from_frontmatter(p: Path) -> str | None:
+    """Pull `doc_id:` out of a YAML frontmatter block at the top of a .md file."""
+    text = p.read_text()
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return None
+    for line in text[4:end].splitlines():
+        if line.startswith("doc_id:"):
+            return line.split(":", 1)[1].strip().strip("'\"")
+    return None
+
+
 @click.group()
 @click.version_option(version=__version__, prog_name="gdoc")
 def cli():
@@ -93,8 +132,12 @@ def auth_status_cmd():
 @click.option("--chip-counts/--no-chip-counts", default=True,
               help="Recover voting/reaction chip counts via an extra markdown export call.")
 def pull(doc, out, html_out, extract_assets, revision, chip_counts):
-    """Pull a Google Doc and write Markdown (and optionally HTML)."""
-    doc_id = parse_doc_id(doc)
+    """Pull a Google Doc and write Markdown (and optionally HTML).
+
+    DOC is a doc ID, a Google Docs URL, or the path to an existing local
+    .md file (whose frontmatter doc_id is used; --out defaults to that
+    same path so re-pulls overwrite in place)."""
+    doc_id, path_hint = resolve_doc_target(doc)
     try:
         creds = load_credentials()
     except AuthError as e:
@@ -115,7 +158,7 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
 
     md = emit_document_md(document)
 
-    out_path = out or Path(_slugify(document.title) + ".md")
+    out_path = out or path_hint or Path(_slugify(document.title) + ".md")
     out_path.write_text(md)
     click.echo(f"wrote {out_path}")
 
@@ -147,8 +190,10 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
 @click.argument("doc")
 @click.option("--format", "fmt", type=click.Choice(["table", "json"]), default="table")
 def revisions(doc, fmt):
-    """List a doc's revisions (id, modifiedDate, lastModifyingUser)."""
-    doc_id = parse_doc_id(doc)
+    """List a doc's revisions (id, modifiedDate, lastModifyingUser).
+
+    DOC is a doc ID, a URL, or a local .md file."""
+    doc_id, _ = resolve_doc_target(doc)
     try:
         creds = load_credentials()
     except AuthError as e:
@@ -192,7 +237,10 @@ def revisions(doc, fmt):
               help="Discard any existing replay state and start over.")
 def replay(doc, since, until, out, commit, squash_by_author, include_comments,
            extract_assets, dry_run, resume, restart):
-    """Walk revisions + comment events and emit one .md (and optional commit) per event."""
+    """Walk revisions + comment events and emit one .md (and optional commit) per event.
+
+    DOC is a doc ID, a URL, or a local .md file (whose frontmatter doc_id
+    is used; --out defaults to that same path so commits target it)."""
     from datetime import datetime as _dt
 
     from google_doc_diff.replay import git as gitwrap
@@ -210,7 +258,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
         timeline_hash,
     )
 
-    doc_id = parse_doc_id(doc)
+    doc_id, path_hint = resolve_doc_target(doc)
     cwd = Path.cwd()
 
     existing = read_state(cwd)
@@ -255,7 +303,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
             )
             sys.exit(2)
 
-    out_path = out or Path(_slugify(doc_id) + ".md")
+    out_path = out or path_hint or Path(_slugify(doc_id) + ".md")
 
     if commit:
         if not (cwd / ".git").exists():
@@ -398,31 +446,38 @@ def _parse_duration(s: str):
 def fetch(doc, out, extract_assets):
     """Refresh the working-tree state with a fresh live pull.
 
-    Designed for use in directories where `gdoc replay --commit` has built a
-    git history: re-runs only the rich JSON-derived live-state pass, so
+    Designed for use in directories where `gdoc replay` has built a git
+    history: re-runs only the rich JSON-derived live-state pass, so
     `git diff HEAD` gives you 'what's changed in the doc since the last
     replayed event' — without re-walking the timeline.
 
-    With no DOC argument, reads the doc id and out path from
+    DOC can be a doc ID, a URL, or a local .md file (in which case the
+    doc id is read from its frontmatter and the file is refreshed in
+    place). With no DOC argument, reads the doc id and out path from
     .gdoc-replay-state.json in the current directory.
     """
     from google_doc_diff.replay.state import read_state
 
     cwd = Path.cwd()
     state = read_state(cwd)
+    path_hint: Path | None = None
     if doc:
-        doc_id = parse_doc_id(doc)
+        doc_id, path_hint = resolve_doc_target(doc)
     elif state:
         doc_id = state.doc_id
     else:
         click.echo("no DOC argument given and no .gdoc-replay-state.json in cwd; "
-                   "pass a doc id or url explicitly.", err=True)
+                   "pass a doc id, URL, or .md file.", err=True)
         sys.exit(2)
 
-    if not out and state and not doc:
+    if out:
+        out_path = out
+    elif path_hint:
+        out_path = path_hint
+    elif state and not doc:
         out_path = Path(state.out_path)
     else:
-        out_path = out or Path(_slugify(doc_id) + ".md")
+        out_path = Path(_slugify(doc_id) + ".md")
 
     try:
         creds = load_credentials()
@@ -450,8 +505,11 @@ def fetch(doc, out, extract_assets):
 @click.argument("path", required=False, type=click.Path(path_type=Path))
 @click.option("--color", type=click.Choice(["auto", "always", "never"]), default="auto")
 def diff(doc, path, color):
-    """Pull current Doc; show unified diff against PATH (default: <slug>.md)."""
-    doc_id = parse_doc_id(doc)
+    """Pull current Doc; show unified diff against PATH.
+
+    DOC can be a doc ID, a URL, or a local .md file. When DOC is a .md
+    file and PATH is omitted, the diff is run against that same file."""
+    doc_id, path_hint = resolve_doc_target(doc)
     try:
         creds = load_credentials()
     except AuthError as e:
@@ -465,7 +523,7 @@ def diff(doc, path, color):
         sys.exit(2)
     md_new = emit_document_md(document)
 
-    target = path or Path(_slugify(document.title) + ".md")
+    target = path or path_hint or Path(_slugify(document.title) + ".md")
     if not target.exists():
         click.echo(f"local file not found: {target}", err=True)
         sys.exit(2)

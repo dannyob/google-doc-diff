@@ -2,11 +2,15 @@
 
 from datetime import UTC, datetime
 
+import click
+import pytest
+
 from google_doc_diff.cli import (
     _can_reconcile,
     _slugify,
     _strip_volatile_frontmatter,
     cli,
+    resolve_doc_target,
 )
 from google_doc_diff.replay.state import EventState, ReplayState
 from google_doc_diff.replay.timeline import Event
@@ -94,6 +98,51 @@ def test_strip_volatile_frontmatter_preserves_real_content_diffs():
 def test_strip_volatile_frontmatter_no_frontmatter_passthrough():
     md = "no frontmatter here\n"
     assert _strip_volatile_frontmatter(md) == md
+
+
+# --- resolve_doc_target ----------------------------------------------------
+
+
+def test_resolve_doc_target_bare_id():
+    doc_id, path = resolve_doc_target("1aBcDeFGhIjKLMN_example_id_1234567")
+    assert doc_id == "1aBcDeFGhIjKLMN_example_id_1234567"
+    assert path is None
+
+
+def test_resolve_doc_target_url():
+    url = "https://docs.google.com/document/d/1aBcDeFGhIjKLMN/edit?tab=t.0"
+    doc_id, path = resolve_doc_target(url)
+    assert doc_id == "1aBcDeFGhIjKLMN"
+    assert path is None
+
+
+def test_resolve_doc_target_md_file_reads_frontmatter_doc_id(tmp_path):
+    f = tmp_path / "my-notes.md"
+    f.write_text(
+        "---\n"
+        "doc_id: 1aBcExample\n"
+        "title: My Notes\n"
+        "---\n"
+        "body\n"
+    )
+    doc_id, path = resolve_doc_target(str(f))
+    assert doc_id == "1aBcExample"
+    assert path == f
+
+
+def test_resolve_doc_target_quoted_doc_id_value(tmp_path):
+    """YAML often quotes the doc_id; the resolver strips the quotes."""
+    f = tmp_path / "q.md"
+    f.write_text("---\ndoc_id: '1aBcQuoted'\n---\nbody\n")
+    doc_id, _ = resolve_doc_target(str(f))
+    assert doc_id == "1aBcQuoted"
+
+
+def test_resolve_doc_target_md_file_without_doc_id_raises(tmp_path):
+    f = tmp_path / "nope.md"
+    f.write_text("---\ntitle: Just A Title\n---\nbody\n")
+    with pytest.raises(click.ClickException):
+        resolve_doc_target(str(f))
 
 
 # --- _can_reconcile ---------------------------------------------------------
