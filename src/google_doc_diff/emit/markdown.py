@@ -91,6 +91,8 @@ def _emit_frontmatter(doc: Document) -> str:
         "comments_preserved": doc.comments_preserved,
         "suggestions_preserved": doc.suggestions_preserved,
     }
+    if doc.gdoc_state:
+        fm["gdoc"] = doc.gdoc_state
     body = yaml.safe_dump(fm, sort_keys=True, default_flow_style=False, allow_unicode=True)
     return f"---\n{body}---\n"
 
@@ -187,7 +189,10 @@ def _emit_heading(h: Heading, doc: Document, fn_ids: set) -> str:
     text = _emit_inline_runs(h.runs, doc, fn_ids)
     hashes = "#" * h.level
     classes = list(h.classes)
-    attr_str = _format_attr_block(h.anchor_id, classes)
+    # v2: paragraph_id rides alongside anchor_id. anchor_id wins on the
+    # heading-anchor channel; paragraph_id is added as a second `#…` token.
+    extra_ids = [h.paragraph_id] if h.paragraph_id else []
+    attr_str = _format_attr_block(h.anchor_id, classes, extra_ids=extra_ids)
     if attr_str:
         return f"{hashes} {text} {attr_str}"
     return f"{hashes} {text}"
@@ -195,13 +200,14 @@ def _emit_heading(h: Heading, doc: Document, fn_ids: set) -> str:
 
 def _emit_paragraph(p: Paragraph, doc: Document, fn_ids: set) -> str:
     text = _emit_inline_runs(p.runs, doc, fn_ids)
-    if not text.strip() and not p.classes:
+    if not text.strip() and not p.classes and not p.paragraph_id:
         return ""
-    if "gd-subtitle" in p.classes:
+    if "gd-subtitle" in p.classes and not p.paragraph_id:
         return f"::: gd-subtitle\n{text}\n:::"
-    if not p.classes:
+    if not p.classes and not p.paragraph_id:
         return text
-    attr_str = _format_attr_block(None, list(p.classes))
+    extra_ids = [p.paragraph_id] if p.paragraph_id else []
+    attr_str = _format_attr_block(None, list(p.classes), extra_ids=extra_ids)
     return f"::: {{{attr_str.strip('{}')}}}\n{text}\n:::" if attr_str else text
 
 
@@ -555,12 +561,26 @@ def _format_footnote_definition(fn: Footnote, doc: Document) -> str:
 # --- attribute / text helpers ---------------------------------------------
 
 
-def _format_attr_block(anchor_id: str | None, classes: list[str]) -> str:
+def _format_attr_block(
+    anchor_id: str | None,
+    classes: list[str],
+    extra_ids: list[str] | None = None,
+) -> str:
+    """Render `{#id1 .class1 .class2 #id2}` style pandoc attribute block.
+
+    `anchor_id` is the *primary* identifier (heading anchor or block anchor —
+    becomes the first `#…` token, which pandoc parses as the canonical id).
+    `extra_ids` (e.g. v2's `paragraph_id`) appears after the classes so the
+    primary id keeps its position-of-honor.
+    """
     parts: list[str] = []
     if anchor_id:
         parts.append(f"#{anchor_id}")
     for cls in sorted(classes):
         parts.append(f".{cls}")
+    for extra in extra_ids or ():
+        if extra:
+            parts.append(f"#{extra}")
     if not parts:
         return ""
     return "{" + " ".join(parts) + "}"
