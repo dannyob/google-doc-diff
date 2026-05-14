@@ -12,7 +12,6 @@ in tests. Field naming mirrors the Docs API where possible (e.g. `text` not
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Union
 
 from google_doc_diff.ast.nodes import (
     ParagraphProperties,
@@ -58,7 +57,7 @@ class ApplyStyle:
     block_id: str
     start: int
     end: int
-    style: Union[StyleDescriptor, ParagraphProperties, dict]
+    style: StyleDescriptor | ParagraphProperties | dict
 
 
 @dataclass(frozen=True)
@@ -90,10 +89,10 @@ class MoveBlock:
 
 
 # Sum type for static checkers
-Op = Union[
-    InsertText, DeleteRange, ApplyStyle,
-    InsertBlock, DeleteBlock, MoveBlock,
-]
+Op = (
+    InsertText | DeleteRange | ApplyStyle
+    | InsertBlock | DeleteBlock | MoveBlock
+)
 
 
 @dataclass

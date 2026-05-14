@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from google_doc_diff.apply import DOCS_API, Channel, channel_for, group_by_channel
+from google_doc_diff.ast.nodes import StyleDescriptor
 from google_doc_diff.ops import (
     ApplyStyle,
     DeleteBlock,
@@ -11,7 +12,6 @@ from google_doc_diff.ops import (
     MoveBlock,
     OpPlan,
 )
-from google_doc_diff.ast.nodes import StyleDescriptor
 
 
 def test_every_primitive_routes_to_docs_api_for_overnight_scope():

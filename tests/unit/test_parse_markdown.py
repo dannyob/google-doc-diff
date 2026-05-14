@@ -13,7 +13,6 @@ from google_doc_diff.parse.markdown import (
     parse_frontmatter,
 )
 
-
 # --- frontmatter ----------------------------------------------------------
 
 

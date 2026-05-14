@@ -7,6 +7,7 @@ plus the OpPlan container). `diff` produces an OpPlan from two ASTs.
 The OpPlan is consumed by `apply/` which selects a channel per primitive
 and emits Docs `batchUpdate` requests or `/save` bundles.
 """
+from google_doc_diff.ops.diff import diff
 from google_doc_diff.ops.primitives import (
     ApplyStyle,
     DeleteBlock,
@@ -17,7 +18,6 @@ from google_doc_diff.ops.primitives import (
     Op,
     OpPlan,
 )
-from google_doc_diff.ops.diff import diff
 
 __all__ = [
     "ApplyStyle",

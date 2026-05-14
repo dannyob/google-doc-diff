@@ -8,12 +8,12 @@ by channel before sending.
 from __future__ import annotations
 
 from collections import defaultdict
-from enum import Enum
+from enum import StrEnum
 
 from google_doc_diff.ops.primitives import Op
 
 
-class Channel(str, Enum):
+class Channel(StrEnum):
     DOCS_API = "docs_api"
     DRIVE_API = "drive_api"
     KIX_SAVE = "kix_save"

@@ -11,7 +11,7 @@ is the stronger goal; we approach it incrementally.)
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -32,7 +32,7 @@ def _wrap(blocks, gdoc_state=None) -> Document:
     return Document(
         doc_id="d1", title="t", revision_id="r1",
         drive_url="https://docs.example/d/d1/edit",
-        captured_at=datetime(2026, 5, 14, tzinfo=timezone.utc),
+        captured_at=datetime(2026, 5, 14, tzinfo=UTC),
         schema_version=1, last_modifying_user=None, source_mode="pull",
         comments_preserved=True, suggestions_preserved=True,
         tabs=[Tab(tab_id="t1", title="(default)", level=0, blocks=blocks)],

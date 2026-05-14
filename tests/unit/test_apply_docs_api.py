@@ -21,7 +21,6 @@ from google_doc_diff.ops import (
     OpPlan,
 )
 
-
 # --- translate ------------------------------------------------------------
 
 

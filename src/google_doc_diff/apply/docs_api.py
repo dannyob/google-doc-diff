@@ -21,7 +21,7 @@ Limitations (overnight scope):
 """
 from __future__ import annotations
 
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 from google_doc_diff.ast.nodes import (
     Heading,
@@ -39,7 +39,6 @@ from google_doc_diff.ops.primitives import (
     MoveBlock,
     OpPlan,
 )
-
 
 # --- translate -------------------------------------------------------------
 

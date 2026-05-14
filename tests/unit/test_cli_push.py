@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from google_doc_diff.cli_push import (
     PushResult,
     plan_to_json,
@@ -13,7 +11,6 @@ from google_doc_diff.cli_push import (
     push_new,
     write_plan_json,
 )
-
 
 # --- Fakes ---------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 """Tests for ops/diff — AST -> OpPlan diff."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from google_doc_diff.ast.nodes import (
     Document,
@@ -25,7 +25,7 @@ from google_doc_diff.ops import (
 def _doc(blocks) -> Document:
     return Document(
         doc_id="d", title="t", revision_id="r", drive_url="u",
-        captured_at=datetime(2026, 5, 14, tzinfo=timezone.utc),
+        captured_at=datetime(2026, 5, 14, tzinfo=UTC),
         schema_version=1, last_modifying_user=None, source_mode="pull",
         comments_preserved=True, suggestions_preserved=True,
         tabs=[Tab(tab_id="t1", title="(default)", level=0, blocks=blocks)],

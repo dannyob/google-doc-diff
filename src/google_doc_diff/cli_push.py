@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
+from google_doc_diff.apply.docs_api import apply as apply_docs_api
 from google_doc_diff.ast.from_docs_json import build_document
 from google_doc_diff.ast.nodes import Document, Tab
-from google_doc_diff.apply.docs_api import apply as apply_docs_api
 from google_doc_diff.ops import OpPlan, diff
 from google_doc_diff.parse.markdown import parse_document_md
 
@@ -148,10 +149,10 @@ def _style_to_json(s) -> dict:
 
 def _empty_document() -> Document:
     """A blank Document used as the base when creating from scratch."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     return Document(
         doc_id="", title="", revision_id="", drive_url="",
-        captured_at=datetime.now(tz=timezone.utc),
+        captured_at=datetime.now(tz=UTC),
         schema_version=1, last_modifying_user=None, source_mode="pull",
         comments_preserved=True, suggestions_preserved=True,
         tabs=[Tab(tab_id="t1", title="(default)", level=0, blocks=[])],

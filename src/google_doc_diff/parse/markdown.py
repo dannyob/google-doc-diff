@@ -25,8 +25,8 @@ Deferred: tables, images, equations, multi-tab `:::` fences, conflict markers.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable
 
 import yaml
 from markdown_it import MarkdownIt

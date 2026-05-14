@@ -11,7 +11,7 @@ Three properties under test:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import yaml
 
@@ -29,7 +29,7 @@ from google_doc_diff.emit.markdown import emit_document_md
 def _doc(blocks=None, gdoc_state=None) -> Document:
     return Document(
         doc_id="d1", title="t", revision_id="r1", drive_url="u",
-        captured_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        captured_at=datetime(2026, 1, 1, tzinfo=UTC),
         schema_version=1, last_modifying_user=None, source_mode="pull",
         comments_preserved=True, suggestions_preserved=True,
         tabs=[Tab(tab_id="t1", title="(default)", level=0, blocks=blocks or [])],

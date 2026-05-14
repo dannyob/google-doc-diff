@@ -15,7 +15,6 @@ from google_doc_diff.ast.nodes import (
     VotingChip,
 )
 
-
 # --- ParagraphProperties --------------------------------------------------
 
 

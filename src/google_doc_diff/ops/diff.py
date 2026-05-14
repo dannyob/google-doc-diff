@@ -20,7 +20,7 @@ Overnight scope:
 from __future__ import annotations
 
 import difflib
-from typing import Iterable
+from collections.abc import Iterable
 
 from google_doc_diff.ast.nodes import (
     Document,
