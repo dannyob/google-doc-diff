@@ -131,11 +131,27 @@ it can:
 The vote / reaction recovery costs one extra Drive markdown-export call
 per pull. Disable it with `--no-chip-counts` if you don't need counts.
 
-## What it doesn't do
+## Round-trip preview (this branch)
 
-- **Push edits back to the Doc.** v1 is one-way. The on-disk format
-  preserves enough metadata that v2 can do round-trip, but the parsers
-  are stubbed.
+This branch (`worktree-round-trip`) adds `gdoc push` — write a markdown
+file back to a Google Doc. Prose, headings, lists, and inline formatting
+go end-to-end; three-way merge against a moving remote is a follow-up.
+See [`STATUS.md`](STATUS.md) for what landed, what's deferred, and the
+OAuth-scope caveat before running against a live doc.
+
+```
+$ gdoc push doc.md --new --title "Quick draft"     # create new doc
+$ gdoc push doc.md DOC --force                     # overwrite remote
+$ gdoc push doc.md DOC --dry-run                   # show planned ops
+$ gdoc push doc.md DOC --plan-only plan.json       # JSON dump
+```
+
+Design spec is at
+[`docs/superpowers/specs/2026-05-14-gdoc-round-trip-design.md`](docs/superpowers/specs/2026-05-14-gdoc-round-trip-design.md).
+
+## What it doesn't do (v1)
+
+- **Push edits back to the Doc.** v1 is one-way; this branch lifts that.
 - **Render Drawings.** No Google API for them.
 - **Recover every vote count.** Google's markdown export sometimes omits
   chip renderings (mid-table dropdowns, in particular). Affected chips
