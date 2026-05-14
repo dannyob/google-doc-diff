@@ -647,5 +647,95 @@ def _colorize(line: str) -> str:
     return line
 
 
+@cli.command()
+@click.argument("path", type=click.Path(path_type=Path, exists=True))
+@click.argument("doc", required=False)
+@click.option("--new", "new_doc", is_flag=True,
+              help="Create a fresh Google Doc and push to it (instead of DOC).")
+@click.option("--title", default=None,
+              help="Title for --new. Defaults to the markdown's frontmatter title.")
+@click.option("--force", "force", is_flag=True,
+              help="Push without 3-way merge; remote-side changes since base are overwritten.")
+@click.option("--dry-run", "dry_run", is_flag=True,
+              help="Compute the OpPlan but don't write anything. Exit 0.")
+@click.option("--plan-only", "plan_only", type=click.Path(path_type=Path), default=None,
+              help="Write the OpPlan as JSON to PATH; don't apply.")
+def push(path, doc, new_doc, title, force, dry_run, plan_only):
+    """Push a local .md back to a Google Doc.
+
+    \b
+    Modes:
+      gdoc push PATH.md DOC --force           push to existing DOC
+      gdoc push PATH.md --new --title TITLE   create a new doc and push
+      gdoc push PATH.md DOC --dry-run         compute plan only
+      gdoc push PATH.md DOC --plan-only OUT   write plan JSON to OUT
+
+    v1 of push is `--force`-only (no 3-way merge); design spec details the
+    full symmetric flow.
+    """
+    from google_doc_diff.cli_push import (
+        format_plan_summary,
+        push_dry_run,
+        push_force,
+        push_new,
+        write_plan_json,
+    )
+
+    # Authentication.
+    try:
+        creds = load_credentials()
+    except AuthError as e:
+        click.echo(f"auth: {e}", err=True)
+        sys.exit(2)
+    api = GdocAPI(creds)
+
+    if plan_only:
+        doc_id = None
+        if doc:
+            doc_id, _ = resolve_doc_target(doc)
+        plan = push_dry_run(path, doc_id=doc_id, docs_service=api._docs if doc_id else None)
+        write_plan_json(plan, plan_only)
+        click.echo(f"wrote {plan_only}")
+        click.echo(format_plan_summary(plan))
+        return
+
+    if dry_run:
+        doc_id = None
+        if doc:
+            doc_id, _ = resolve_doc_target(doc)
+        plan = push_dry_run(path, doc_id=doc_id, docs_service=api._docs if doc_id else None)
+        click.echo(format_plan_summary(plan))
+        return
+
+    if new_doc:
+        if not title:
+            # Fall back to the frontmatter title
+            from google_doc_diff.parse.markdown import parse_frontmatter
+            fm, _ = parse_frontmatter(path.read_text())
+            title = fm.get("title") or path.stem
+        click.echo(f"creating new doc: {title!r}")
+        result = push_new(
+            path, title=title,
+            drive_service=api._drive_v3, docs_service=api._docs,
+        )
+        click.echo(f"new doc id: {result.doc_id}")
+        click.echo(format_plan_summary(result.plan))
+        click.echo("ok")
+        return
+
+    if not doc:
+        raise click.ClickException("either DOC or --new is required")
+    if not force:
+        raise click.ClickException(
+            "this branch ships --force only (3-way merge is not implemented); "
+            "re-run with --force"
+        )
+    doc_id, _ = resolve_doc_target(doc)
+    click.echo(f"pushing to {doc_id} (force) …")
+    result = push_force(path, doc_id=doc_id, docs_service=api._docs)
+    click.echo(format_plan_summary(result.plan))
+    click.echo("ok")
+
+
 if __name__ == "__main__":
     cli()

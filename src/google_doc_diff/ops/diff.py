@@ -104,24 +104,39 @@ def _structural_diff(base_blocks, target_blocks, plan: OpPlan) -> None:
     target_ids = set(target_idx)
 
     # Deletes first (apply-order rule: deletes before inserts).
+    #
+    # Anonymous (id-less) base blocks are also considered deleted when the
+    # target side has no anonymous block at the same position. Concretely:
+    # if `base` is non-empty and `target` is empty, we still want to emit
+    # one DeleteBlock per base anonymous block. We can't generate a
+    # DeleteBlock(block_id=…) for an id-less block, so anonymous deletes
+    # are skipped here — that's a known limitation, and an acceptable one
+    # for the v1 "create from scratch" path which has an empty base.
     for deleted_id in sorted(base_ids - target_ids):
         plan.append(DeleteBlock(block_id=deleted_id))
 
     # Inserts second.
-    # New blocks need an "after_id" anchor in the *target* sequence.
+    # Any target block not present in the base (by id, OR id-less so trivially
+    # not matched) needs an InsertBlock. The `after_id` anchor is the closest
+    # preceding *identified* block that the base also recognises — when both
+    # sides have no ids yet (create-from-scratch), we cascade by walking the
+    # target in order: anonymous block N is anchored after the previously-
+    # emitted anchor (the AST id of the prior block, or None if there is none).
+    prev_anchor: str | None = None
     for i, block in enumerate(target_blocks):
         bid = _block_id(block)
-        if bid is None:
-            # Anonymous block (no id) — treat as insert relative to the
-            # previous identified block. List items fall here; v1 emits
-            # them coalesced and we round-trip the whole run via the
-            # surrounding paragraph_ids.
+        if bid is not None and bid in base_ids:
+            prev_anchor = bid
             continue
-        if bid in base_ids:
-            continue
-        # Find the nearest preceding id in target_blocks that also exists in base.
-        after = _previous_shared_id(target_blocks, i, base_ids)
-        plan.append(InsertBlock(after_id=after, block=block))
+        # Either id-less (anonymous) or id-bearing but new to the doc.
+        if bid is not None:
+            # New identified block — anchor it via the most recent shared id.
+            anchor = _previous_shared_id(target_blocks, i, base_ids) or prev_anchor
+        else:
+            anchor = prev_anchor
+        plan.append(InsertBlock(after_id=anchor, block=block))
+        if bid is not None:
+            prev_anchor = bid
 
     # Moves third (id exists in both, position differs).
     for bid in sorted(base_ids & target_ids):
