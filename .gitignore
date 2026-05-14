@@ -11,3 +11,4 @@ dist/
 htmlcov/
 .DS_Store
 .claude/
+kix_probes/data/
