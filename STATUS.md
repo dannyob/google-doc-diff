@@ -64,36 +64,31 @@ wrote /tmp/plan.json
 The `--new` and `--force` flags do call live Google APIs; see the **OAuth
 scope** caveat below before running them.
 
-## OAuth scope caveat (important — first thing to do before live testing)
+## OAuth scopes
 
-v1 of `gdoc` requests only read-only scopes:
+`REQUIRED_SCOPES` now includes write scopes:
 
 ```python
 # src/google_doc_diff/auth.py
 REQUIRED_SCOPES = [
-    "https://www.googleapis.com/auth/documents.readonly",
+    "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.file",
 ]
 ```
 
-For `push --new` (Drive create + Docs batchUpdate) we need write scopes.
-Until those are added, `push --new` will fail with a 403 from the real
-google-api-client. Two ways forward:
+Users with cached `gdoc auth login` tokens need to re-run it once for
+Google to prompt for the new scopes. Imported gog tokens that already
+carry full `auth/drive` keep working unchanged.
 
-1. **Quick**: temporarily edit `auth.py` to swap `.readonly` for the
-   write variants and re-run `gdoc auth login` (the OAuth flow will ask
-   for the new scopes).
-   ```python
-   REQUIRED_SCOPES = [
-       "https://www.googleapis.com/auth/documents",
-       "https://www.googleapis.com/auth/drive.file",
-   ]
-   ```
-2. **Proper**: split read vs write scopes, request write only when
-   `push` is the verb being run. Future cleanup.
+## Live smoke test (verified)
 
-All the unit/fixture tests pass against mock services without ever hitting
-the network, so the OAuth gate is a separate, isolated step.
+Source markdown — `# H1`, plain paragraph with `**bold**` and `*italic*`,
+`## H2`, two bulleted list items — pushed and pulled back through Google
+Docs round-trips cleanly: order preserved, headings correct, paragraph
+not styled as heading, bullets rendered, bold/italic preserved. Only
+differences vs source are Google-added (heading anchor ids, doc-level
+revision/captured_at metadata).
 
 ## What's deliberately not done
 
@@ -110,9 +105,11 @@ remain follow-ups:
   v1; writing them needs the `/save` channel or Drive Comments v3 with
   new request shapes.
 - **Conflict UX** (`--continue`, `--abort`, `.gd-conflict` divs).
-- **Live e2e tests** against a real doc. The mock-service property test
-  in `tests/round_trip/test_full_pipeline_mock.py` is the closest
-  equivalent that doesn't need network.
+- **Automated live e2e tests** against a real doc. One manual smoke
+  test now passes (see "Live smoke test" above); turning it into an
+  automated test requires a service account or sandbox doc the CI
+  can write to. The mock-service property test in
+  `tests/round_trip/test_full_pipeline_mock.py` covers it offline.
 - **Pull-time `paragraph_id` synthesis.** `parse` accepts paragraph_ids
   when present but `ast/from_docs_json.py` doesn't yet stamp them on
   fresh pulls. For now the diff falls back to "everything is an anonymous
