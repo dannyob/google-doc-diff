@@ -8,6 +8,7 @@ from google_doc_diff.apply.docs_api import (
 )
 from google_doc_diff.ast.nodes import (
     Heading,
+    ListItem,
     Paragraph,
     Run,
     StyleDescriptor,
@@ -101,6 +102,102 @@ def test_insert_block_paragraph_with_run_styles_emits_update_text_style():
     # The bold range covers "bold" (first 4 chars after insert at 1).
     bold_req = next(r for r in update_reqs if r["updateTextStyle"]["textStyle"].get("bold"))
     assert bold_req["updateTextStyle"]["range"] == {"startIndex": 1, "endIndex": 5}
+
+
+def test_chained_anonymous_inserts_advance_index():
+    """Two InsertBlocks with after_id=None must NOT both insert at index 1.
+
+    Docs API processes batchUpdate requests sequentially, so two inserts at
+    index 1 would stack the second one BEFORE the first. The translate
+    function must thread a running cursor for inserts at the same anchor.
+    """
+    p1 = Paragraph(runs=[Run(text="First")])
+    p2 = Paragraph(runs=[Run(text="Second")])
+    ops = [
+        InsertBlock(after_id=None, block=p1),
+        InsertBlock(after_id=None, block=p2),
+    ]
+    reqs = translate(ops, block_index={}, end_of_body=1)
+    inserts = [r for r in reqs if "insertText" in r]
+    assert inserts[0]["insertText"]["location"]["index"] == 1
+    assert inserts[0]["insertText"]["text"] == "First\n"
+    # "First\n" is 6 chars, so the next paragraph must land at 1 + 6 = 7.
+    assert inserts[1]["insertText"]["location"]["index"] == 7
+    assert inserts[1]["insertText"]["text"] == "Second\n"
+
+
+def test_paragraph_insert_emits_normal_text_named_style():
+    """Plain Paragraph inserts must reset namedStyleType to NORMAL_TEXT.
+
+    Otherwise the inserted paragraph inherits whatever named style the
+    insert point happens to have (e.g. HEADING_1 from a preceding heading
+    insert), which is how the live smoke test ended up with every block
+    styled as a heading.
+    """
+    p = Paragraph(runs=[Run(text="just text")])
+    op = InsertBlock(after_id=None, block=p)
+    reqs = translate([op], block_index={}, end_of_body=1)
+    style_reqs = [r for r in reqs if "updateParagraphStyle" in r]
+    assert len(style_reqs) == 1
+    assert style_reqs[0]["updateParagraphStyle"]["paragraphStyle"]["namedStyleType"] == "NORMAL_TEXT"
+
+
+def test_list_item_insert_emits_bullets_request():
+    """ListItem inserts must add createParagraphBullets so they render as bullets."""
+    li = ListItem(level=0, kind="bulleted", list_id="L1", runs=[Run(text="item")])
+    op = InsertBlock(after_id=None, block=li)
+    reqs = translate([op], block_index={}, end_of_body=1)
+    bullet_reqs = [r for r in reqs if "createParagraphBullets" in r]
+    assert len(bullet_reqs) == 1
+    cb = bullet_reqs[0]["createParagraphBullets"]
+    # Range must cover the inserted text (5 chars: "item\n").
+    assert cb["range"]["startIndex"] == 1
+    assert cb["range"]["endIndex"] == 1 + len("item\n")
+    assert cb["bulletPreset"].startswith("BULLET_")
+
+
+def test_ordered_list_item_uses_numbered_preset():
+    li = ListItem(level=0, kind="ordered", list_id="L1", runs=[Run(text="step")])
+    op = InsertBlock(after_id=None, block=li)
+    reqs = translate([op], block_index={}, end_of_body=1)
+    bullet_req = next(r for r in reqs if "createParagraphBullets" in r)
+    assert bullet_req["createParagraphBullets"]["bulletPreset"].startswith("NUMBERED_")
+
+
+def test_paragraph_style_emitted_before_text_style():
+    """updateParagraphStyle must come before updateTextStyle for the same insert.
+
+    Docs API resets character formatting to the named style's defaults when
+    namedStyleType changes. If we emit text styles first, the subsequent
+    paragraph style change wipes them out. Witnessed live: bold/italic
+    survived translate() but vanished from the rendered doc.
+    """
+    p = Paragraph(runs=[
+        Run(text="hi "),
+        Run(text="bold", formatting=StyleDescriptor(bold=True)),
+    ])
+    op = InsertBlock(after_id=None, block=p)
+    reqs = translate([op], block_index={}, end_of_body=1)
+    # Strip insertText (always first) and look at the styling order.
+    style_keys = [next(iter(r.keys())) for r in reqs if "insertText" not in r]
+    para_idx = style_keys.index("updateParagraphStyle")
+    text_idx = style_keys.index("updateTextStyle")
+    assert para_idx < text_idx, (
+        f"updateParagraphStyle (idx {para_idx}) must precede "
+        f"updateTextStyle (idx {text_idx}); order was {style_keys}"
+    )
+
+
+def test_list_item_insert_emits_normal_text_named_style():
+    """List items, like paragraphs, must reset namedStyleType to NORMAL_TEXT."""
+    li = ListItem(level=0, kind="bulleted", list_id="L1", runs=[Run(text="x")])
+    op = InsertBlock(after_id=None, block=li)
+    reqs = translate([op], block_index={}, end_of_body=1)
+    style_reqs = [r for r in reqs if "updateParagraphStyle" in r]
+    assert any(
+        r["updateParagraphStyle"]["paragraphStyle"]["namedStyleType"] == "NORMAL_TEXT"
+        for r in style_reqs
+    )
 
 
 def test_delete_block_translates_to_delete_content_range():

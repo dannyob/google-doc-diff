@@ -65,14 +65,23 @@ def translate(
 
     The function does NOT mutate indices in `block_index` as it goes; that
     bookkeeping happens in `apply()` after the batchUpdate succeeds.
+
+    For chained InsertBlocks at the same logical anchor, we thread a
+    per-anchor cursor so successive inserts advance instead of stacking at
+    the same Docs index — matching how the API processes requests
+    sequentially. Without this, two inserts at after_id=None would both
+    target index 1 and the second would land BEFORE the first.
     """
     reqs: list[dict] = []
+    cursor: dict[object, int] = {}
     for op in ops:
-        reqs.extend(_translate_op(op, block_index=block_index, end_of_body=end_of_body))
+        reqs.extend(_translate_op(
+            op, block_index=block_index, end_of_body=end_of_body, cursor=cursor,
+        ))
     return reqs
 
 
-def _translate_op(op, *, block_index, end_of_body) -> list[dict]:
+def _translate_op(op, *, block_index, end_of_body, cursor) -> list[dict]:
     if isinstance(op, InsertText):
         if op.block_id not in block_index:
             return []  # unresolvable; caller should have rebuilt the index
@@ -109,7 +118,9 @@ def _translate_op(op, *, block_index, end_of_body) -> list[dict]:
         )
 
     if isinstance(op, InsertBlock):
-        return _translate_insert_block(op, block_index=block_index, end_of_body=end_of_body)
+        return _translate_insert_block(
+            op, block_index=block_index, end_of_body=end_of_body, cursor=cursor,
+        )
 
     if isinstance(op, DeleteBlock):
         if op.block_id not in block_index:
@@ -140,24 +151,25 @@ def _translate_op(op, *, block_index, end_of_body) -> list[dict]:
 
 
 def _translate_insert_block(
-    op: InsertBlock, *, block_index: BlockIndex, end_of_body: int,
+    op: InsertBlock, *, block_index: BlockIndex, end_of_body: int, cursor: dict,
 ) -> list[dict]:
-    """Decompose an InsertBlock into insertText + style requests."""
+    """Decompose an InsertBlock into insertText + style + bullets requests.
+
+    `cursor` carries a per-anchor running index across the batch so chained
+    inserts at the same anchor advance instead of stacking at one index.
+    """
     after_id = op.after_id
     if after_id is None:
-        # Insert at very top of body.
-        insert_at = 1
+        base_at = 1
     elif after_id in block_index:
         _, end = block_index[after_id]
-        # `end` is exclusive — i.e. the index just past the previous block's
-        # trailing newline, which is where we want to insert.
-        insert_at = end
+        base_at = end
     else:
-        # Unresolvable anchor: fall back to end-of-body.
-        insert_at = end_of_body
+        base_at = end_of_body
+    insert_at = cursor.get(after_id, base_at)
 
     block = op.block
-    text, style_ranges, paragraph_style = _render_block_for_insert(block)
+    text, style_ranges, paragraph_style, bullet_preset = _render_block_for_insert(block)
     reqs: list[dict] = []
     if not text:
         return reqs
@@ -165,16 +177,9 @@ def _translate_insert_block(
         "location": {"index": insert_at},
         "text": text,
     }})
-    # Apply per-run style.
-    for rel_start, rel_end, fmt in style_ranges:
-        if fmt is None:
-            continue
-        reqs.extend(_style_requests(
-            fmt,
-            start_index=insert_at + rel_start,
-            end_index=insert_at + rel_end,
-        ))
-    # Apply paragraph-level style (e.g. HEADING_1) to the newly-inserted range.
+    # Paragraph style MUST come before text styles: changing namedStyleType
+    # resets character formatting to the new named style's defaults, so any
+    # bold/italic emitted earlier would be wiped.
     if paragraph_style:
         reqs.append({"updateParagraphStyle": {
             "range": {
@@ -184,15 +189,43 @@ def _translate_insert_block(
             "paragraphStyle": paragraph_style,
             "fields": ",".join(sorted(paragraph_style.keys())),
         }})
+    for rel_start, rel_end, fmt in style_ranges:
+        if fmt is None:
+            continue
+        reqs.extend(_style_requests(
+            fmt,
+            start_index=insert_at + rel_start,
+            end_index=insert_at + rel_end,
+        ))
+    if bullet_preset is not None:
+        reqs.append({"createParagraphBullets": {
+            "range": {
+                "startIndex": insert_at,
+                "endIndex": insert_at + len(text),
+            },
+            "bulletPreset": bullet_preset,
+        }})
+    cursor[after_id] = insert_at + len(text)
     return reqs
 
 
-def _render_block_for_insert(block):
-    """Return (text, style_ranges, paragraph_style) for an AST block insert.
+_BULLET_PRESETS = {
+    "bulleted": "BULLET_DISC_CIRCLE_SQUARE",
+    "ordered": "NUMBERED_DECIMAL_ALPHA_ROMAN",
+}
 
-    `style_ranges` is a list of (start_offset, end_offset, StyleDescriptor)
-    in the block-local coordinate space. The final newline is included in
-    `text` so the block is properly terminated for Docs.
+
+def _render_block_for_insert(block):
+    """Return (text, style_ranges, paragraph_style, bullet_preset) for an insert.
+
+    A `paragraph_style` is ALWAYS returned (never empty for supported
+    block kinds) — the inserted paragraph must explicitly declare its
+    named style, otherwise it inherits the style at the insert point.
+    Without that, two inserts at the same index can leave the second one
+    formatted as a heading.
+
+    `bullet_preset`, when not None, signals that the caller should follow
+    the text insert with a `createParagraphBullets` request.
     """
     if isinstance(block, (Paragraph, Heading)):
         runs: list[Run] = list(block.runs or [])
@@ -206,10 +239,11 @@ def _render_block_for_insert(block):
             ranges.append((off, off + len(r.text), r.formatting))
             off += len(r.text)
         text = "".join(parts) + "\n"
-        paragraph_style: dict = {}
         if isinstance(block, Heading) and 1 <= block.level <= 6:
-            paragraph_style["namedStyleType"] = f"HEADING_{block.level}"
-        return text, ranges, paragraph_style
+            named = f"HEADING_{block.level}"
+        else:
+            named = "NORMAL_TEXT"
+        return text, ranges, {"namedStyleType": named}, None
 
     if isinstance(block, ListItem):
         runs = list(block.runs or [])
@@ -221,13 +255,10 @@ def _render_block_for_insert(block):
                 continue
             ranges.append((off, off + len(r.text), r.formatting))
             off += len(r.text)
-        # ListItem styling happens via createParagraphBullets in the apply
-        # post-pass; for now we just insert text and let the bullets be added
-        # at a later iteration.
-        return text, ranges, {}
+        preset = _BULLET_PRESETS.get(block.kind, "BULLET_DISC_CIRCLE_SQUARE")
+        return text, ranges, {"namedStyleType": "NORMAL_TEXT"}, preset
 
-    # Other block kinds: not yet supported — return empty insert.
-    return "", [], {}
+    return "", [], {}, None
 
 
 # --- style helpers --------------------------------------------------------
