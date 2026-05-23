@@ -151,7 +151,7 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
         sys.exit(2)
 
     try:
-        document = _pull_rich_document(api, doc_id, chip_counts=chip_counts)
+        document, docs_json = _pull_rich_document_with_raw(api, doc_id, chip_counts=chip_counts)
     except Exception as e:
         click.echo(f"api: {e}", err=True)
         sys.exit(2)
@@ -161,6 +161,15 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
     out_path = out or path_hint or Path(_slugify(document.title) + ".md")
     out_path.write_text(md)
     click.echo(f"wrote {out_path}")
+
+    # Write the merge-base sidecar so `gdoc push` (default = 3-way merge)
+    # has the doc's pull-time state to diff against.
+    state_path = out_path.with_suffix(out_path.suffix + ".pull-state.json")
+    state_path.write_text(json.dumps({
+        "doc_id": doc_id,
+        "revision_id": document.revision_id,
+        "docs_json": docs_json,
+    }, default=str) + "\n")
 
     if html_out:
         html_path = Path(html_out)
@@ -589,6 +598,17 @@ def _pull_rich_document(api, doc_id, *, chip_counts=True):
     and the AST contains PUA widget placeholders) cross-references with the
     markdown export to recover chip emoji + counts.
     """
+    document, _docs_json = _pull_rich_document_with_raw(api, doc_id, chip_counts=chip_counts)
+    return document
+
+
+def _pull_rich_document_with_raw(api, doc_id, *, chip_counts=True):
+    """Like _pull_rich_document but also returns the raw docs_json.
+
+    `gdoc push` uses the raw JSON to write a `.pull-state.json` sidecar so a
+    subsequent push has the AST snapshot at pull-time available as the
+    three-way merge base.
+    """
     docs_json = api.get_document(doc_id)
     comments_json = api.list_comments(doc_id)
     document = build_document(docs_json, comments_json)
@@ -602,7 +622,7 @@ def _pull_rich_document(api, doc_id, *, chip_counts=True):
                 attach_widget_renderings(document, md_text)
         except Exception:
             pass   # best-effort
-    return document
+    return document, docs_json
 
 
 _VOLATILE_FRONTMATTER_KEYS = ("captured_at", "last_modifying_user", "revision_id")
@@ -655,7 +675,9 @@ def _colorize(line: str) -> str:
 @click.option("--title", default=None,
               help="Title for --new. Defaults to the markdown's frontmatter title.")
 @click.option("--force", "force", is_flag=True,
-              help="Push without 3-way merge; remote-side changes since base are overwritten.")
+              help="Skip 3-way merge; overwrite remote with local. The default "
+                   "push path is a fetch-and-merge that writes conflict markers "
+                   "into the local md when both sides edited the same block.")
 @click.option("--dry-run", "dry_run", is_flag=True,
               help="Compute the OpPlan but don't write anything. Exit 0.")
 @click.option("--plan-only", "plan_only", type=click.Path(path_type=Path), default=None,
@@ -665,18 +687,21 @@ def push(path, doc, new_doc, title, force, dry_run, plan_only):
 
     \b
     Modes:
-      gdoc push PATH.md DOC --force           push to existing DOC
+      gdoc push PATH.md DOC                   fetch + 3-way merge + apply
+      gdoc push PATH.md DOC --force           overwrite remote (skip merge)
       gdoc push PATH.md --new --title TITLE   create a new doc and push
       gdoc push PATH.md DOC --dry-run         compute plan only
       gdoc push PATH.md DOC --plan-only OUT   write plan JSON to OUT
 
-    v1 of push is `--force`-only (no 3-way merge); design spec details the
-    full symmetric flow.
+    The default path reads `<PATH>.pull-state.json` (written by
+    `gdoc pull`) as the merge base. On conflict it rewrites PATH with
+    `.gd-conflict` divs and exits non-zero so you can resolve and re-push.
     """
     from google_doc_diff.cli_push import (
         format_plan_summary,
         push_dry_run,
         push_force,
+        push_merge,
         push_new,
         write_plan_json,
     )
@@ -725,14 +750,23 @@ def push(path, doc, new_doc, title, force, dry_run, plan_only):
 
     if not doc:
         raise click.ClickException("either DOC or --new is required")
-    if not force:
-        raise click.ClickException(
-            "this branch ships --force only (3-way merge is not implemented); "
-            "re-run with --force"
-        )
     doc_id, _ = resolve_doc_target(doc)
-    click.echo(f"pushing to {doc_id} (force) …")
-    result = push_force(path, doc_id=doc_id, docs_service=api._docs)
+    if force:
+        click.echo(f"pushing to {doc_id} (force) …")
+        result = push_force(path, doc_id=doc_id, docs_service=api._docs)
+        click.echo(format_plan_summary(result.plan))
+        click.echo("ok")
+        return
+
+    click.echo(f"pushing to {doc_id} (merge) …")
+    result = push_merge(path, doc_id=doc_id, docs_service=api._docs)
+    if result.conflicts:
+        click.echo(
+            f"  {len(result.conflicts)} conflict(s) — rewrote {path} with "
+            "conflict markers; resolve and re-run `gdoc push`.",
+            err=True,
+        )
+        sys.exit(2)
     click.echo(format_plan_summary(result.plan))
     click.echo("ok")
 

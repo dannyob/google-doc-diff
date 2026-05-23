@@ -8,6 +8,7 @@ from google_doc_diff.cli_push import (
     plan_to_json,
     push_dry_run,
     push_force,
+    push_merge,
     push_new,
     write_plan_json,
 )
@@ -136,6 +137,108 @@ def test_push_force_applies_against_existing(tmp_path):
     assert result.doc_id == "existing"
     assert docs.batches
     assert docs.batches[0]["documentId"] == "existing"
+
+
+# --- push_merge ----------------------------------------------------------
+
+
+def _docs_payload_with_single_heading(text="Hello", revision_id="rev1"):
+    """A minimal Docs API payload representing a single H1 paragraph.
+
+    Hand-crafted so build_document produces a Paragraph/Heading with the
+    right shape — used as both the remote and (when written to the
+    sidecar) the base for push_merge tests.
+    """
+    return {
+        "documentId": "merge-doc",
+        "title": "Merge Doc",
+        "revisionId": revision_id,
+        "namedStyles": {"styles": [{"namedStyleType": "HEADING_1"}]},
+        "body": {"content": [
+            {"startIndex": 1, "endIndex": 7, "paragraph": {
+                "paragraphStyle": {"namedStyleType": "HEADING_1"},
+                "elements": [{"textRun": {"content": text + "\n"}}],
+            }},
+            {"startIndex": 7, "endIndex": 8, "paragraph": {
+                "elements": [{"textRun": {"content": "\n"}}],
+            }},
+        ]},
+    }
+
+
+def _write_pulled_md(tmp_path: Path, md: str, docs_json: dict) -> Path:
+    """Write a md + sidecar pair (the shape `gdoc pull` produces)."""
+    import json
+    p = tmp_path / "merged.md"
+    p.write_text(md)
+    state = tmp_path / "merged.md.pull-state.json"
+    state.write_text(json.dumps({
+        "doc_id": docs_json["documentId"],
+        "revision_id": docs_json.get("revisionId", ""),
+        "docs_json": docs_json,
+    }))
+    return p
+
+
+def test_push_merge_no_remote_changes_applies_local_edits(tmp_path):
+    """Local edited, remote unchanged — merge takes local, applies the diff."""
+    payload = _docs_payload_with_single_heading(text="Hello")
+    # Local md mirrors what `gdoc pull` would produce, then edited.
+    md = (
+        "---\n"
+        "title: Merge Doc\n"
+        "doc_id: merge-doc\n"
+        "revision_id: rev1\n"
+        "drive_url: ''\n"
+        "captured_at: '2026-05-14T00:00:00+00:00'\n"
+        "schema_version: 1\n"
+        "last_modifying_user: null\n"
+        "source_mode: pull\n"
+        "comments_preserved: true\n"
+        "suggestions_preserved: true\n"
+        "---\n"
+        "\n# Hello edited {#p-0-0}\n"
+    )
+    md_path = _write_pulled_md(tmp_path, md, payload)
+    docs = _FakeDocs(doc=payload)
+    result = push_merge(md_path, doc_id="merge-doc", docs_service=docs)
+    assert result.conflicts == []
+    assert docs.batches  # apply called
+    # Verify the request mentions the edited text.
+    text_inserts = [r for r in docs.last_requests if "insertText" in r]
+    assert any("edited" in r["insertText"]["text"] for r in text_inserts)
+
+
+def test_push_merge_with_conflict_writes_markers_and_skips_apply(tmp_path):
+    """Both sides edited the same block — push_merge writes markers, doesn't apply."""
+    base_payload = _docs_payload_with_single_heading(text="Hello", revision_id="rev1")
+    remote_payload = _docs_payload_with_single_heading(
+        text="Hello from remote", revision_id="rev2",
+    )
+    md = (
+        "---\n"
+        "title: Merge Doc\n"
+        "doc_id: merge-doc\n"
+        "revision_id: rev1\n"
+        "drive_url: ''\n"
+        "captured_at: '2026-05-14T00:00:00+00:00'\n"
+        "schema_version: 1\n"
+        "last_modifying_user: null\n"
+        "source_mode: pull\n"
+        "comments_preserved: true\n"
+        "suggestions_preserved: true\n"
+        "---\n"
+        "\n# Hello from local {#p-0-0}\n"
+    )
+    md_path = _write_pulled_md(tmp_path, md, base_payload)
+    docs = _FakeDocs(doc=remote_payload)
+    result = push_merge(md_path, doc_id="merge-doc", docs_service=docs)
+    assert len(result.conflicts) == 1
+    assert docs.batches == []  # no apply
+    rewritten = md_path.read_text()
+    assert ".gd-conflict" in rewritten
+    assert "Hello from local" in rewritten
+    assert "Hello from remote" in rewritten
 
 
 # --- push_dry_run --------------------------------------------------------

@@ -25,6 +25,8 @@ from typing import Any
 from google_doc_diff.apply.docs_api import apply as apply_docs_api
 from google_doc_diff.ast.from_docs_json import build_document
 from google_doc_diff.ast.nodes import Document, Tab
+from google_doc_diff.emit.markdown import emit_document_md
+from google_doc_diff.merge import merge
 from google_doc_diff.ops import OpPlan, diff
 from google_doc_diff.parse.markdown import parse_document_md
 
@@ -34,6 +36,11 @@ class PushResult:
     doc_id: str
     plan: OpPlan
     ack: dict[str, Any]
+    conflicts: list = None  # populated only on the merge path
+
+    def __post_init__(self):
+        if self.conflicts is None:
+            self.conflicts = []
 
 
 def push_new(
@@ -90,6 +97,65 @@ def push_force(
     plan = diff(remote, local)
     ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
     return PushResult(doc_id=doc_id, plan=plan, ack=ack)
+
+
+def push_merge(
+    md_path: Path,
+    *,
+    doc_id: str,
+    docs_service,
+) -> PushResult:
+    """Default push path: three-way merge between pull-time base, local, and remote.
+
+    Looks for `<md_path>.pull-state.json` (written by `gdoc pull`). If
+    present, uses its docs_json as the merge base. If absent, falls
+    back to treating remote as the base — equivalent to `--force` for
+    the no-state case, with the safety that any block local doesn't
+    have but remote does will be preserved.
+
+    On conflict, rewrites md_path with `.gd-conflict` divs and returns
+    a PushResult whose `conflicts` is non-empty and `plan` is empty —
+    the caller decides how to surface that to the user. No batchUpdate
+    is sent in the conflict case.
+    """
+    md = md_path.read_text()
+    local = parse_document_md(md)
+
+    docs_payload = docs_service.documents().get(
+        documentId=doc_id, includeTabsContent=True,
+    ).execute()
+    remote = build_document(docs_payload)
+
+    base = _load_base_for_merge(md_path, fallback=remote)
+    merged, conflicts = merge(base, local, remote)
+
+    if conflicts:
+        # Write the merged AST (which embeds Conflict nodes) back to md_path
+        # so the user can resolve and re-push. Do NOT mutate the doc.
+        md_path.write_text(emit_document_md(merged))
+        return PushResult(
+            doc_id=doc_id, plan=OpPlan(), ack={}, conflicts=conflicts,
+        )
+
+    # No conflicts — diff remote -> merged and apply.
+    plan = diff(remote, merged)
+    ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
+    return PushResult(doc_id=doc_id, plan=plan, ack=ack, conflicts=[])
+
+
+def _load_base_for_merge(md_path: Path, *, fallback: Document) -> Document:
+    """Read the `.pull-state.json` sidecar (if present) and rebuild its AST.
+
+    Falls back to ``fallback`` if no sidecar exists — gives the merge
+    something sensible to work with even for users who hand-wrote a md
+    file that wasn't produced by `gdoc pull`.
+    """
+    state_path = md_path.with_suffix(md_path.suffix + ".pull-state.json")
+    if not state_path.exists():
+        return fallback
+    raw = json.loads(state_path.read_text())
+    docs_json = raw.get("docs_json") or {}
+    return build_document(docs_json)
 
 
 def push_dry_run(
