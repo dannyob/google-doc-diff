@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from google_doc_diff.ast.nodes import (
     Document,
     Heading,
+    ListItem,
     Paragraph,
     Run,
     StyleDescriptor,
@@ -204,6 +205,29 @@ def test_multiple_text_edits_emitted_in_descending_offset_order():
     # Strictly non-increasing (a delete and insert at the same offset both ok).
     for prev, cur in zip(offsets, offsets[1:], strict=False):
         assert cur <= prev, f"text ops out of order: {offsets}"
+
+
+def test_list_item_text_edit_is_surgical_not_block_replace():
+    """ListItem with paragraph_id matches by id, so text edits become
+    InsertText/DeleteRange on the existing block — no DeleteBlock /
+    InsertBlock churn."""
+    base = _doc([
+        ListItem(level=0, kind="bulleted", list_id="L1",
+                 runs=[Run(text="apple")], paragraph_id="li-1"),
+        ListItem(level=0, kind="bulleted", list_id="L1",
+                 runs=[Run(text="banana")], paragraph_id="li-2"),
+    ])
+    target = _doc([
+        ListItem(level=0, kind="bulleted", list_id="L1",
+                 runs=[Run(text="apricot")], paragraph_id="li-1"),
+        ListItem(level=0, kind="bulleted", list_id="L1",
+                 runs=[Run(text="banana")], paragraph_id="li-2"),
+    ])
+    plan = diff(base, target)
+    kinds = [type(o).__name__ for o in plan]
+    assert "InsertBlock" not in kinds
+    assert "DeleteBlock" not in kinds
+    assert any(k in ("InsertText", "DeleteRange") for k in kinds)
 
 
 # --- composite ----------------------------------------------------------

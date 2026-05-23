@@ -71,7 +71,7 @@ def _block_id(block) -> str | None:
             getattr(block, "anchor_id", None) if isinstance(block, Heading) else None
         )
     if isinstance(block, ListItem):
-        return None  # list items are coalesced under their parent list
+        return block.paragraph_id
     return None
 
 

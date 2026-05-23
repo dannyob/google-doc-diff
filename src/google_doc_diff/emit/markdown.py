@@ -275,10 +275,10 @@ def _emit_list(items: list[ListItem], doc: Document, fn_ids: set) -> str:
     kind = items[0].kind
     for item in items:
         marker = "1." if item.kind == "ordered" else "-"
-        # Pandoc indent: 3 spaces per nesting level for ordered, 2 for bulleted
         indent = "    " * item.level if kind == "ordered" else "  " * item.level
+        id_prefix = f"[]{{#{item.paragraph_id}}}" if item.paragraph_id else ""
         text = _emit_inline_runs(item.runs, doc, fn_ids)
-        out_lines.append(f"{indent}{marker} {text}")
+        out_lines.append(f"{indent}{marker} {id_prefix}{text}")
     return "\n".join(out_lines)
 
 

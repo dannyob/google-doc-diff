@@ -214,6 +214,7 @@ class ListItem:
     list_id: str
     runs: list[Run] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
+    paragraph_id: str | None = None      # v2: stable id for diff/round-trip
 
 
 @dataclass

@@ -117,7 +117,7 @@ def _stamp_paragraph_ids(tabs: list) -> None:
         for ti, tab in enumerate(tab_list):
             base = f"{prefix}{ti}" if prefix else str(ti)
             for bi, block in enumerate(tab.blocks):
-                if not isinstance(block, (Paragraph, Heading)):
+                if not isinstance(block, (Paragraph, Heading, ListItem)):
                     continue
                 if block.paragraph_id is not None:
                     continue

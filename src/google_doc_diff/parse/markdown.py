@@ -43,6 +43,8 @@ from google_doc_diff.ast.nodes import (
     Tab,
 )
 
+_LIST_ITEM_ID_RE = re.compile(r"^\[\]\{#(?P<id>[A-Za-z0-9_][\w.-]*)\}")
+
 CONFLICT_LOCAL_MARKER = "<<<<<<< LOCAL"
 CONFLICT_SEPARATOR = "======="
 CONFLICT_REMOTE_MARKER = ">>>>>>> REMOTE"
@@ -311,13 +313,23 @@ def _tokens_to_blocks(tokens: list[Token], attrs: dict) -> list:
                     i += 1
                     continue
                 if t.type == "list_item_open":
-                    # Find the matching inline for this item: paragraph_open inline paragraph_close
                     j = i + 1
                     while j < len(tokens) and tokens[j].type != "inline":
                         j += 1
                     text, runs, _ = _runs_from_inline(tokens[j])
+                    paragraph_id = None
+                    if runs and runs[0].text:
+                        m = _LIST_ITEM_ID_RE.match(runs[0].text)
+                        if m:
+                            paragraph_id = m.group("id")
+                            stripped = runs[0].text[m.end():]
+                            if stripped:
+                                runs[0] = Run(text=stripped, formatting=runs[0].formatting)
+                            else:
+                                runs = runs[1:]
                     out.append(ListItem(
                         level=level, kind=kind, list_id=list_id, runs=runs,
+                        paragraph_id=paragraph_id,
                     ))
                     # Advance past this list item
                     while i < len(tokens) and tokens[i].type != "list_item_close":

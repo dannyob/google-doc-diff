@@ -101,6 +101,38 @@ def test_paragraph_ids_not_stamped_on_empty_paragraphs():
     assert blocks[1].paragraph_id is None       # empty paragraph stays anonymous
 
 
+def test_paragraph_ids_stamped_on_list_items():
+    """ListItems get the same `p-{tab_idx}-{block_idx}` id as Paragraph/Heading.
+
+    Without this, list-item edits diff as wholesale block re-inserts
+    (because _block_id returns None for ListItems with no id), so even a
+    one-character text edit deletes + re-inserts every list item.
+    """
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "lists": {"L1": {"listProperties": {"nestingLevels": [
+            {"glyphType": "BULLET"},
+        ]}}},
+        "body": {"content": [
+            {"paragraph": {
+                "bullet": {"listId": "L1"},
+                "elements": [{"textRun": {"content": "first item\n"}}],
+            }},
+            {"paragraph": {
+                "bullet": {"listId": "L1"},
+                "elements": [{"textRun": {"content": "second item\n"}}],
+            }},
+        ]},
+    }
+    doc = build_document(j)
+    blocks = doc.tabs[0].blocks
+    assert all(b.paragraph_id is not None for b in blocks), (
+        [type(b).__name__ for b in blocks],
+        [getattr(b, "paragraph_id", "missing") for b in blocks],
+    )
+    assert blocks[0].paragraph_id != blocks[1].paragraph_id
+
+
 def test_paragraph_ids_unique_across_tabs():
     """Tab-prefixed ids stay unique when a doc has multiple tabs."""
     j = {

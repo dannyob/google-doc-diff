@@ -249,6 +249,31 @@ def test_build_block_index_ignores_section_breaks_etc():
     assert end == 13
 
 
+def test_build_block_index_includes_list_items_with_ids():
+    doc = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "lists": {"L1": {"listProperties": {"nestingLevels": [
+            {"glyphType": "BULLET"},
+        ]}}},
+        "body": {"content": [
+            {"startIndex": 1, "endIndex": 12,
+             "paragraph": {
+                 "bullet": {"listId": "L1"},
+                 "elements": [{"textRun": {"content": "first item\n"}}],
+             }},
+            {"startIndex": 12, "endIndex": 24,
+             "paragraph": {
+                 "bullet": {"listId": "L1"},
+                 "elements": [{"textRun": {"content": "second item\n"}}],
+             }},
+        ]},
+    }
+    idx, end = build_block_index_from_docs_document(doc)
+    assert len(idx) == 2
+    assert all(k.startswith("p-") for k in idx)
+    assert end == 24
+
+
 def test_build_block_index_skips_empty_paragraphs():
     """Empty paragraphs have no paragraph_id (per _stamp_paragraph_ids), so
     they shouldn't appear in the block_index either."""
