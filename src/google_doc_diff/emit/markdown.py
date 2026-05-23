@@ -455,9 +455,14 @@ def _emit_run(r: Run) -> str:
             text = f"*{text}*"
         if fmt.strikethrough:
             text = f"~~{text}~~"
-    cls = synthesize_inline_class(fmt)
-    if cls:
-        return f"[{text}]{{.{cls}}}"
+    # Don't wrap links in a class span — the [text](url) syntax can't nest
+    # inside [...]{.class} without breaking markdown parsers. Link-default
+    # styling (blue + underline) is inherent to the link and doesn't need a
+    # separate class.
+    if not fmt.link_url:
+        cls = synthesize_inline_class(fmt)
+        if cls:
+            return f"[{text}]{{.{cls}}}"
     return text
 
 
