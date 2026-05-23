@@ -72,6 +72,7 @@ def build_document(
 
     builder = _DocBuilder(docs_json)
     tabs = builder.build_tabs()
+    _stamp_paragraph_ids(tabs)
 
     document = Document(
         doc_id=doc_id,
@@ -97,6 +98,30 @@ def build_document(
 
 
 # --- Comments (Drive Comments API) ---------------------------------------
+
+
+def _stamp_paragraph_ids(tabs: list) -> None:
+    """Assign a deterministic paragraph_id to every Paragraph/Heading.
+
+    Format: ``p-{tab_idx}-{block_idx}`` — stable across re-pulls of the
+    same docs_json so a fresh pull and a previously-pulled-and-edited
+    local markdown share the same ids for unchanged paragraphs. This is
+    the join key the diff layer uses to recognise "same block, different
+    content" vs "deleted + reinserted".
+
+    Headings already carry an `anchor_id` from Google's `headingId`; the
+    paragraph_id is a separate diff key (the diff layer reads
+    paragraph_id first, then falls back to anchor_id for headings).
+    """
+    def _walk(tab_list: list, prefix: str) -> None:
+        for ti, tab in enumerate(tab_list):
+            base = f"{prefix}{ti}" if prefix else str(ti)
+            for bi, block in enumerate(tab.blocks):
+                if isinstance(block, (Paragraph, Heading)) and block.paragraph_id is None:
+                    block.paragraph_id = f"p-{base}-{bi}"
+            if tab.children:
+                _walk(tab.children, f"{base}.")
+    _walk(tabs, "")
 
 
 def _build_comments(comments: list[dict]) -> dict[str, Comment]:

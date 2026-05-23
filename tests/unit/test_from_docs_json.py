@@ -58,6 +58,49 @@ def test_build_simple_doc_with_heading_and_paragraph():
     assert blocks[1].runs[0].text == "World"
 
 
+def test_paragraph_ids_stamped_on_pull():
+    """Pull-time AST must give each Paragraph/Heading a stable paragraph_id.
+
+    Without this, diff against an edited local md can't match blocks back
+    to their remote counterparts, so `push --force` falls back to "delete
+    everything and re-insert" — broken round-trip semantics.
+    """
+    doc = build_document(_docs_json_minimal())
+    blocks = doc.tabs[0].blocks
+    h, p = blocks[0], blocks[1]
+    assert h.paragraph_id is not None
+    assert p.paragraph_id is not None
+    assert h.paragraph_id != p.paragraph_id
+    # Format is deterministic across pulls of the same revision so re-pulls
+    # produce the same ids for the same paragraphs in the same positions.
+    assert h.paragraph_id.startswith("p-")
+    # Idempotence: building the same docs_json twice yields the same ids.
+    doc2 = build_document(_docs_json_minimal())
+    ids2 = [b.paragraph_id for b in doc2.tabs[0].blocks]
+    assert [b.paragraph_id for b in blocks] == ids2
+
+
+def test_paragraph_ids_unique_across_tabs():
+    """Tab-prefixed ids stay unique when a doc has multiple tabs."""
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "tabs": [
+            {"tabProperties": {"tabId": "A", "title": "A"},
+             "documentTab": {"body": {"content": [
+                 {"paragraph": {"elements": [{"textRun": {"content": "first\n"}}]}},
+             ]}}},
+            {"tabProperties": {"tabId": "B", "title": "B"},
+             "documentTab": {"body": {"content": [
+                 {"paragraph": {"elements": [{"textRun": {"content": "second\n"}}]}},
+             ]}}},
+        ],
+    }
+    doc = build_document(j)
+    p_a = doc.tabs[0].blocks[0].paragraph_id
+    p_b = doc.tabs[1].blocks[0].paragraph_id
+    assert p_a and p_b and p_a != p_b
+
+
 def test_named_styles_extracted_to_doc():
     doc = build_document(_docs_json_minimal())
     assert "HEADING_1" in doc.named_styles
