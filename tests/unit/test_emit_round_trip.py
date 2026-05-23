@@ -18,12 +18,15 @@ import yaml
 from google_doc_diff.ast.nodes import (
     Document,
     Heading,
+    ListItem,
     Paragraph,
     ParagraphProperties,
     Run,
+    StyleDescriptor,
     Tab,
 )
 from google_doc_diff.emit.markdown import emit_document_md
+from google_doc_diff.parse.markdown import parse_document_md
 
 
 def _doc(blocks=None, gdoc_state=None) -> Document:
@@ -174,3 +177,80 @@ def test_paragraph_props_to_css_handles_bool_float_int_str():
     assert "--ot-heading-depth: 2" in css
     assert "--ot-keep-with-next: true" in css
     assert "--ot-alignment: center" in css
+
+
+# --- no-corruption round-trip guard ---------------------------------------
+
+
+_PANDOC_SYNTAX_FRAGMENTS = ["{.gd-", "]{.", "[]{.", "{#gd-"]
+
+
+def _assert_no_pandoc_in_run_text(doc, label=""):
+    """Walk all runs in a parsed AST and assert none contain literal pandoc
+    attribute syntax. This catches the class of bug where emit wraps
+    a construct in `[...]{.class}` and the parser can't handle the
+    nesting, so the raw syntax ends up as visible text in the Google Doc.
+    """
+    for tab in doc.tabs:
+        for block in tab.blocks:
+            runs = getattr(block, "runs", None) or []
+            for r in runs:
+                for frag in _PANDOC_SYNTAX_FRAGMENTS:
+                    assert frag not in r.text, (
+                        f"literal pandoc syntax {frag!r} in run text "
+                        f"{r.text!r} ({label})"
+                    )
+
+
+def test_link_with_default_doc_styling_round_trips_clean():
+    """A link with Google Docs' default styling (underline + blue) must
+    NOT produce nested `[[link](url)]{.class}` that leaks pandoc syntax
+    into the parsed run text. Regression test for the bug that put
+    literal `]{.gd-style-88de0b29}` into live Google Docs.
+    """
+    doc = _doc([Paragraph(runs=[
+        Run(text="click "),
+        Run(text="here", formatting=StyleDescriptor(
+            link_url="https://example.com",
+            underline=True,
+            foreground_color="#1155CC",
+        )),
+        Run(text=" for more"),
+    ], paragraph_id="p-1")])
+    md = emit_document_md(doc)
+    assert "]{.gd-style" not in md, f"class span wrapping a link: {md}"
+    parsed = parse_document_md(md)
+    _assert_no_pandoc_in_run_text(parsed, "link round-trip")
+    link_runs = [r for b in parsed.tabs[0].blocks
+                 for r in getattr(b, "runs", []) if r.formatting.link_url]
+    assert link_runs, "link lost in round-trip"
+    assert link_runs[0].formatting.link_url == "https://example.com"
+
+
+def test_bold_italic_paragraph_round_trips_no_pandoc_leak():
+    """Bold and italic runs must not leak markdown syntax as text."""
+    doc = _doc([Paragraph(runs=[
+        Run(text="normal "),
+        Run(text="bold", formatting=StyleDescriptor(bold=True)),
+        Run(text=" and "),
+        Run(text="italic", formatting=StyleDescriptor(italic=True)),
+    ], paragraph_id="p-1")])
+    md = emit_document_md(doc)
+    parsed = parse_document_md(md)
+    _assert_no_pandoc_in_run_text(parsed, "bold/italic round-trip")
+
+
+def test_list_item_ids_round_trip_no_pandoc_leak():
+    """ListItem paragraph_ids must not appear as text in parsed runs."""
+    doc = _doc([
+        ListItem(level=0, kind="bulleted", list_id="L1",
+                 runs=[Run(text="alpha")], paragraph_id="li-1"),
+        ListItem(level=0, kind="bulleted", list_id="L1",
+                 runs=[Run(text="beta")], paragraph_id="li-2"),
+    ])
+    md = emit_document_md(doc)
+    parsed = parse_document_md(md)
+    _assert_no_pandoc_in_run_text(parsed, "list-item id round-trip")
+    items = [b for b in parsed.tabs[0].blocks if isinstance(b, ListItem)]
+    assert items[0].paragraph_id == "li-1"
+    assert items[0].runs[0].text == "alpha"
