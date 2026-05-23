@@ -30,6 +30,7 @@ All checks passed!
 | 7 | `tests/round_trip/` | FakeDocsService + end-to-end property test |
 | A | `ast/from_docs_json.py` | Pull-time `paragraph_id` synthesis (`p-{tab_idx}-{block_idx}`, skipping visually-empty paragraphs); aligned `build_block_index_from_docs_document` keys |
 | B | `ast/nodes.Conflict`, `merge/three_way.py`, emit/parse for `.gd-conflict` git-style markers, `cli_push.push_merge`, `.pull-state.json` sidecar | Default `gdoc push` runs 3-way merge against the pull-time base; writes conflict markers into local md on overlapping edits |
+| C | `cli_push.push_continue`, `_refresh_sidecar`, `has_conflict_blocks` | `gdoc push --continue` reparses the (now hopefully resolved) md and applies; every successful push refreshes the sidecar so the merge base advances |
 
 ## Quick smoke test
 
@@ -106,12 +107,10 @@ remain follow-ups:
 - **Authoring comments / suggestions / chips.** Reading them stays as
   v1; writing them needs the `/save` channel or Drive Comments v3 with
   new request shapes.
-- **`--continue` / `--abort` conflict resolution UX.** After a conflict
-  is written into the md, the user can resolve manually and re-push,
-  but the sidecar's base doesn't advance until the next `gdoc pull` —
-  so the merger still sees a conflict. Workaround today is `--force`
-  to push the resolved md; the spec's `--continue` flag is the proper
-  fix and a clean follow-up chunk.
+- **`--abort` for conflict resolution.** `--continue` ships; `--abort`
+  (discard markers and re-pull) is still a follow-up. Today the
+  equivalent is just `gdoc pull <doc>` which overwrites the conflicted
+  md.
 - **Stable IDs for ListItems.** `_block_id` returns None for ListItem,
   so list reorderings/edits diff as anonymous inserts. Giving ListItem
   a `paragraph_id` (parallel to Paragraph/Heading) + stamping it in
@@ -175,6 +174,8 @@ docs/superpowers/
 
 ```
 $ git log --oneline main..HEAD
+b5c67f6 push: --continue resolves conflicts; refresh sidecar after every apply
+f3dd092 docs: STATUS.md reflects pull-time IDs, surgical force-push, 3-way merge
 105bd01 cli: default `gdoc push` to 3-way merge; sidecar holds the base
 47ac3d2 merge: three-way AST merge + Conflict AST + .gd-conflict markers
 bc6385a push: make surgical edits via push --force actually persist
@@ -197,16 +198,14 @@ f2c8263 emit: round-trip carriers — frontmatter gdoc: ns, paragraph_id attrs, 
 
 ## Picking up the thread
 
-Three-way merge now lands. Natural next chunks:
+Three-way merge with `--continue` and live sidecar refresh now land.
+Natural next chunks:
 
-1. **`--continue` / `--abort`**: after the user resolves conflict
-   markers manually in the md, `gdoc push --continue` should diff
-   remote→local and apply (today: works via `--force`, but `--continue`
-   semantically matches the workflow). `--abort` discards markers and
-   re-pulls.
-2. **Sidecar advances on successful push**: after a clean apply
-   (force or merge), re-fetch and overwrite the `.pull-state.json` so
-   the base stays current.
-3. **ListItem `paragraph_id`**: parallel to Paragraph/Heading;
+1. **`--abort`**: drop conflict markers and re-pull. Today `gdoc pull
+   <doc>` is the manual equivalent.
+2. **ListItem `paragraph_id`**: parallel to Paragraph/Heading;
    removes the "anonymous insert" fallback for list edits.
+3. **Comments/suggestions/chips merge**: lifecycle ops live in their
+   own diff routines per the spec — currently they round-trip read-
+   only, not via the merger.
 
