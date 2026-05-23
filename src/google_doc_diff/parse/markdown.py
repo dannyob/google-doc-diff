@@ -33,6 +33,7 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from google_doc_diff.ast.nodes import (
+    Conflict,
     Document,
     Heading,
     ListItem,
@@ -41,6 +42,10 @@ from google_doc_diff.ast.nodes import (
     StyleDescriptor,
     Tab,
 )
+
+CONFLICT_LOCAL_MARKER = "<<<<<<< LOCAL"
+CONFLICT_SEPARATOR = "======="
+CONFLICT_REMOTE_MARKER = ">>>>>>> REMOTE"
 
 # Public entry points -------------------------------------------------------
 
@@ -101,11 +106,17 @@ def _split_pandoc_blocks(body: str) -> list[dict]:
     Each chunk is a dict ``{"source": str, "attrs": dict}``. Top-level
     content (no `:::` fence) goes in a chunk with empty attrs. Fenced
     `::: {attrs}` blocks become chunks with the parsed attribute dict.
+
+    `gd-conflict` blocks are treated as opaque: nested `:::` fences
+    inside them are NOT broken out into separate chunks. The whole
+    conflict body (including any inner per-side fences) is captured raw
+    so the conflict parser can split on the git-style markers.
     """
     chunks: list[dict] = []
     cur_lines: list[str] = []
     cur_attrs: dict = {}
     stack: list[tuple[list[str], dict]] = []
+    raw_depth = 0  # >0 means we're inside a gd-conflict block, capturing raw
 
     for line in body.splitlines(keepends=True):
         stripped = line.rstrip("\n").rstrip()
@@ -114,12 +125,32 @@ def _split_pandoc_blocks(body: str) -> list[dict]:
             cur_lines.append(line)
             continue
         attrs_raw = m.group("attrs") or ""
+        if raw_depth > 0:
+            # Inside gd-conflict — track nesting but don't break chunks.
+            if attrs_raw:
+                raw_depth += 1
+                cur_lines.append(line)
+            else:
+                raw_depth -= 1
+                if raw_depth == 0:
+                    # Closing the outer gd-conflict — emit and pop.
+                    chunks.append({"source": "".join(cur_lines), "attrs": cur_attrs})
+                    if stack:
+                        cur_lines, cur_attrs = stack.pop()
+                        cur_lines, cur_attrs = [], {}
+                    else:
+                        cur_lines, cur_attrs = [], {}
+                else:
+                    cur_lines.append(line)
+            continue
         if attrs_raw:
             # Opening fence — push current chunk, start new.
             chunks.append({"source": "".join(cur_lines), "attrs": cur_attrs})
             stack.append((cur_lines, cur_attrs))
             cur_lines = []
             cur_attrs = _parse_attr_block(attrs_raw)
+            if "gd-conflict" in cur_attrs.get("classes", []):
+                raw_depth = 1
         else:
             # Closing fence — emit current chunk, pop.
             chunks.append({"source": "".join(cur_lines), "attrs": cur_attrs})
@@ -177,10 +208,49 @@ def _parse_attr_block(raw: str) -> dict:
 def _parse_chunk(chunk: dict) -> list:
     src = chunk["source"]
     attrs = chunk["attrs"]
+    if "gd-conflict" in attrs.get("classes", []):
+        return [_parse_conflict_chunk(src, attrs)]
     if not src.strip():
         return []
     tokens = _md.parse(src)
     return _tokens_to_blocks(tokens, attrs)
+
+
+def _parse_conflict_chunk(src: str, attrs: dict) -> Conflict:
+    """Parse the inside of a `.gd-conflict` div into a Conflict node.
+
+    Expected shape inside the div:
+
+        <<<<<<< LOCAL
+        … local blocks …
+        =======
+        … remote blocks …
+        >>>>>>> REMOTE
+    """
+    lines = src.splitlines()
+    local: list[str] = []
+    remote: list[str] = []
+    state = "preamble"
+    for ln in lines:
+        s = ln.strip()
+        if s == CONFLICT_LOCAL_MARKER:
+            state = "local"
+            continue
+        if s == CONFLICT_SEPARATOR:
+            state = "remote"
+            continue
+        if s == CONFLICT_REMOTE_MARKER:
+            state = "postamble"
+            continue
+        if state == "local":
+            local.append(ln)
+        elif state == "remote":
+            remote.append(ln)
+    return Conflict(
+        conflict_id=attrs.get("id") or "",
+        local_blocks=parse_body("\n".join(local)),
+        remote_blocks=parse_body("\n".join(remote)),
+    )
 
 
 def _tokens_to_blocks(tokens: list[Token], attrs: dict) -> list:

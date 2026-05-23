@@ -275,6 +275,22 @@ class TableOfContents:
     pass
 
 
+@dataclass
+class Conflict:
+    """A three-way-merge conflict the user must resolve in markdown.
+
+    Both sides edited the same region but with different content. The
+    block carries the local and remote blocks side-by-side; emit
+    renders it as a `.gd-conflict` pandoc div so the user can edit it
+    down to whichever side they want (or a manual merge), then re-run
+    `gdoc push --continue`.
+    """
+    conflict_id: str
+    local_blocks: list = field(default_factory=list)
+    remote_blocks: list = field(default_factory=list)
+    base_blocks: list = field(default_factory=list)
+
+
 # --- Cross-cutting collections ---------------------------------------------
 
 

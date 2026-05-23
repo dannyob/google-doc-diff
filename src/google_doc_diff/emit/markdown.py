@@ -21,6 +21,7 @@ from google_doc_diff.ast.nodes import (
     CodeBlock,
     Comment,
     CommentAnchor,
+    Conflict,
     Document,
     EquationBlock,
     Footnote,
@@ -182,7 +183,44 @@ def _emit_block(block, doc: Document, fn_ids: set) -> str:
         return '<div class="gd-toc"></div>'
     if isinstance(block, Unsupported):
         return _emit_unsupported(block, inline=False)
+    if isinstance(block, Conflict):
+        return _emit_conflict(block, doc, fn_ids)
     raise TypeError(f"unhandled block kind: {type(block).__name__}")
+
+
+CONFLICT_LOCAL_MARKER = "<<<<<<< LOCAL"
+CONFLICT_SEPARATOR = "======="
+CONFLICT_REMOTE_MARKER = ">>>>>>> REMOTE"
+
+
+def _emit_conflict(c: Conflict, doc: Document, fn_ids: set) -> str:
+    """Render a 3-way-merge conflict as a `.gd-conflict` div with git-style markers.
+
+    Shape:
+
+        ::: {.gd-conflict #c-1}
+        <<<<<<< LOCAL
+        … local blocks …
+        =======
+        … remote blocks …
+        >>>>>>> REMOTE
+        :::
+
+    Git-style markers are familiar to anyone who's resolved a merge
+    conflict, and they don't nest pandoc fences inside pandoc fences —
+    keeping the parser straightforward.
+    """
+    local_md = "\n\n".join(_emit_block(b, doc, fn_ids) for b in c.local_blocks)
+    remote_md = "\n\n".join(_emit_block(b, doc, fn_ids) for b in c.remote_blocks)
+    return "\n".join([
+        f"::: {{.gd-conflict #{c.conflict_id}}}",
+        CONFLICT_LOCAL_MARKER,
+        local_md,
+        CONFLICT_SEPARATOR,
+        remote_md,
+        CONFLICT_REMOTE_MARKER,
+        ":::",
+    ])
 
 
 def _emit_heading(h: Heading, doc: Document, fn_ids: set) -> str:
