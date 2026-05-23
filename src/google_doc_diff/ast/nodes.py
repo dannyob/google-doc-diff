@@ -318,6 +318,7 @@ class Comment:
     deleted: bool = False
     replies: list[CommentReply] = field(default_factory=list)
     orphaned: bool = False
+    anchor: str = ""                     # opaque 'kix.<id>' from Drive API
 
 
 @dataclass

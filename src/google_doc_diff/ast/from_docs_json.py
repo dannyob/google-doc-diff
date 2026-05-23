@@ -59,6 +59,7 @@ def build_document(
     drive_url: str | None = None,
     captured_at: datetime | None = None,
     last_modifying_user: str | None = None,
+    kix_resolver=None,
 ) -> Document:
     """Build a Document AST from a Docs API response and optional Comments list."""
     doc_id = docs_json.get("documentId", "")
@@ -94,7 +95,7 @@ def build_document(
         inline_objects=builder.inline_objects,
         css_classes=builder.css_classes,
     )
-    return anchor_comments(document)
+    return anchor_comments(document, kix_resolver=kix_resolver)
 
 
 # --- Comments (Drive Comments API) ---------------------------------------
@@ -176,6 +177,7 @@ def _build_comments(comments: list[dict]) -> dict[str, Comment]:
             resolved=bool(c.get("resolved")),
             deleted=bool(c.get("deleted")),
             replies=replies,
+            anchor=c.get("anchor", ""),
         )
     return out
 
