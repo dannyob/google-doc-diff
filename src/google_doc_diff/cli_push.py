@@ -156,20 +156,24 @@ def push_merge(
     docs_payload = docs_service.documents().get(
         documentId=doc_id, includeTabsContent=True,
     ).execute()
-    remote = build_document(docs_payload)
+    remote_raw = build_document(docs_payload)
+    # Normalize the remote through the same lossy emit→parse pipeline that
+    # the local side went through. Without this, features the parser can't
+    # round-trip (comment anchors, inline spans) create phantom diffs: the
+    # raw remote has clean AST nodes while the merged AST has pandoc syntax
+    # as text. Normalization makes both sides agree on what "unchanged"
+    # looks like.
+    remote = parse_document_md(emit_document_md(remote_raw))
 
     base = _load_base_for_merge(md_path, fallback=remote)
     merged, conflicts = merge(base, local, remote)
 
     if conflicts:
-        # Write the merged AST (which embeds Conflict nodes) back to md_path
-        # so the user can resolve and re-push. Do NOT mutate the doc.
         md_path.write_text(emit_document_md(merged))
         return PushResult(
             doc_id=doc_id, plan=OpPlan(), ack={}, conflicts=conflicts,
         )
 
-    # No conflicts — diff remote -> merged and apply.
     plan = diff(remote, merged)
     ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
     _refresh_sidecar(md_path, doc_id=doc_id, docs_service=docs_service)
@@ -238,12 +242,14 @@ def push_abort(
             "If you want to discard local edits and restore from remote, "
             "run `gdoc pull <doc>` instead.",
         )
-    md_path.write_text(emit_document_md(document))
+    aborted_md = emit_document_md(document)
+    md_path.write_text(aborted_md)
     state_path = md_path.with_suffix(md_path.suffix + ".pull-state.json")
     state_path.write_text(json.dumps({
         "doc_id": document.doc_id,
         "revision_id": document.revision_id,
         "docs_json": docs_json,
+        "base_md": aborted_md,
     }, default=str) + "\n")
 
 
@@ -258,16 +264,28 @@ def _refresh_sidecar(md_path: Path, *, doc_id: str, docs_service) -> None:
     docs_payload = docs_service.documents().get(
         documentId=doc_id, includeTabsContent=True,
     ).execute()
+    base_doc = build_document(docs_payload)
+    base_md = emit_document_md(base_doc)
     state_path = md_path.with_suffix(md_path.suffix + ".pull-state.json")
     state_path.write_text(json.dumps({
         "doc_id": doc_id,
         "revision_id": docs_payload.get("revisionId", ""),
         "docs_json": docs_payload,
+        "base_md": base_md,
     }, default=str) + "\n")
 
 
 def _load_base_for_merge(md_path: Path, *, fallback: Document) -> Document:
     """Read the `.pull-state.json` sidecar (if present) and rebuild its AST.
+
+    Prefers the `base_md` field (the emitted markdown saved at pull time)
+    over `docs_json` — both produce an AST, but `base_md` goes through
+    the same lossy emit→parse pipeline as the local file. Without that
+    normalization, features the parser can't round-trip (comment anchors,
+    some inline spans) create phantom diffs: base has clean AST nodes
+    while local has literal pandoc syntax as text, so merge thinks every
+    such paragraph was "locally changed" and re-inserts the raw syntax
+    into the doc.
 
     Falls back to ``fallback`` if no sidecar exists — gives the merge
     something sensible to work with even for users who hand-wrote a md
@@ -277,6 +295,9 @@ def _load_base_for_merge(md_path: Path, *, fallback: Document) -> Document:
     if not state_path.exists():
         return fallback
     raw = json.loads(state_path.read_text())
+    base_md = raw.get("base_md")
+    if base_md:
+        return parse_document_md(base_md)
     docs_json = raw.get("docs_json") or {}
     return build_document(docs_json)
 

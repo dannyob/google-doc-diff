@@ -90,7 +90,7 @@ def _block_text(block) -> str:
     runs = getattr(block, "runs", None)
     if not runs:
         return ""
-    return "".join(r.text for r in runs)
+    return "".join(getattr(r, "text", "") or "" for r in runs)
 
 
 # --- structural diff -----------------------------------------------------
@@ -235,10 +235,11 @@ def _runs_to_ranges(runs: Iterable[Run]) -> list[tuple[int, int, object]]:
     out: list[tuple[int, int, object]] = []
     off = 0
     for r in runs:
-        if not r.text:
+        text = getattr(r, "text", None)
+        if not text:
             continue
-        out.append((off, off + len(r.text), r.formatting))
-        off += len(r.text)
+        out.append((off, off + len(text), getattr(r, "formatting", None)))
+        off += len(text)
     return out
 
 

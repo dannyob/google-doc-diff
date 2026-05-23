@@ -169,6 +169,7 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
         "doc_id": doc_id,
         "revision_id": document.revision_id,
         "docs_json": docs_json,
+        "base_md": md,
     }, default=str) + "\n")
 
     if html_out:
