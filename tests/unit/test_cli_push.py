@@ -4,10 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from google_doc_diff.cli_push import (
+    NoConflictToAbortError,
     PushResult,
     UnresolvedConflictError,
     has_conflict_blocks,
     plan_to_json,
+    push_abort,
     push_continue,
     push_dry_run,
     push_force,
@@ -375,6 +377,92 @@ class _RefetchingFakeDocs:
         self.last_requests = body["requests"]
         self.batches.append({"documentId": documentId, "requests": body["requests"]})
         return _Wrap({"documentId": documentId, "replies": []})
+
+
+# --- push_abort ----------------------------------------------------------
+
+
+def _make_pulled_document(doc_id="merge-doc", revision_id="rev9", heading="Hello fresh"):
+    """Hand-build a Document representing a freshly-pulled remote state."""
+    from datetime import UTC, datetime
+
+    from google_doc_diff.ast.nodes import Document, Heading, Run, Tab
+
+    return Document(
+        doc_id=doc_id, title="Merge Doc", revision_id=revision_id, drive_url="u",
+        captured_at=datetime(2026, 5, 23, tzinfo=UTC),
+        schema_version=1, last_modifying_user=None, source_mode="pull",
+        comments_preserved=True, suggestions_preserved=True,
+        tabs=[Tab(tab_id="t-default", title="(default)", level=0, blocks=[
+            Heading(level=1, runs=[Run(text=heading)], paragraph_id="p-0-0"),
+        ])],
+    )
+
+
+def test_push_abort_refuses_when_no_conflict_markers(tmp_path):
+    """--abort is only valid as a conflict-resolution escape hatch.
+
+    If the local md has no Conflict blocks, there's nothing to abort —
+    refuse rather than silently discarding the user's edits.
+    """
+    payload = _docs_payload_with_single_heading(text="Hello")
+    md = (
+        "---\n"
+        "title: Merge Doc\ndoc_id: merge-doc\nrevision_id: rev1\n"
+        "drive_url: ''\ncaptured_at: '2026-05-14T00:00:00+00:00'\n"
+        "schema_version: 1\nlast_modifying_user: null\nsource_mode: pull\n"
+        "comments_preserved: true\nsuggestions_preserved: true\n"
+        "---\n"
+        "\n# Hello with no markers {#p-0-0}\n"
+    )
+    md_path = _write_pulled_md(tmp_path, md, payload)
+    try:
+        push_abort(
+            md_path,
+            document=_make_pulled_document(),
+            docs_json=payload,
+        )
+    except NoConflictToAbortError:
+        pass
+    else:
+        raise AssertionError("expected NoConflictToAbortError")
+    # md was NOT overwritten.
+    assert "Hello with no markers" in md_path.read_text()
+
+
+def test_push_abort_overwrites_md_and_sidecar_when_conflicts_present(tmp_path):
+    """When markers ARE present, abort restores both md and sidecar from remote."""
+    import json
+    payload = _docs_payload_with_single_heading(text="stale base", revision_id="rev1")
+    md = (
+        "---\n"
+        "title: Merge Doc\ndoc_id: merge-doc\nrevision_id: rev1\n"
+        "drive_url: ''\ncaptured_at: '2026-05-14T00:00:00+00:00'\n"
+        "schema_version: 1\nlast_modifying_user: null\nsource_mode: pull\n"
+        "comments_preserved: true\nsuggestions_preserved: true\n"
+        "---\n"
+        "\n# Hello {#p-0-0}\n\n"
+        "::: {.gd-conflict #c-p-0-0}\n"
+        "<<<<<<< LOCAL\n"
+        "::: {#p-0-0}\nfrom local\n:::\n"
+        "=======\n"
+        "::: {#p-0-0}\nfrom remote\n:::\n"
+        ">>>>>>> REMOTE\n"
+        ":::\n"
+    )
+    md_path = _write_pulled_md(tmp_path, md, payload)
+    fresh_doc = _make_pulled_document(revision_id="rev9", heading="Hello fresh")
+    fresh_json = _docs_payload_with_single_heading(text="Hello fresh", revision_id="rev9")
+
+    push_abort(md_path, document=fresh_doc, docs_json=fresh_json)
+
+    # md no longer has markers and reflects the fresh remote heading.
+    rewritten = md_path.read_text()
+    assert ".gd-conflict" not in rewritten
+    assert "Hello fresh" in rewritten
+    # Sidecar advanced.
+    state = json.loads((tmp_path / "merged.md.pull-state.json").read_text())
+    assert state["revision_id"] == "rev9"
 
 
 # --- push_dry_run --------------------------------------------------------

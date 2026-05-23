@@ -35,6 +35,15 @@ class UnresolvedConflictError(RuntimeError):
     """`push --continue` was invoked but the local md still has Conflict blocks."""
 
 
+class NoConflictToAbortError(RuntimeError):
+    """`push --abort` was invoked but the local md has no Conflict blocks.
+
+    The flag is a conflict-resolution escape hatch — bailing here would
+    silently discard the user's actual edits. Refuse and let the user
+    decide explicitly via `gdoc pull` if that's what they really meant.
+    """
+
+
 @dataclass
 class PushResult:
     doc_id: str
@@ -205,6 +214,37 @@ def push_continue(
     ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
     _refresh_sidecar(md_path, doc_id=doc_id, docs_service=docs_service)
     return PushResult(doc_id=doc_id, plan=plan, ack=ack)
+
+
+def push_abort(
+    md_path: Path,
+    *,
+    document: Document,
+    docs_json: dict,
+) -> None:
+    """Discard conflict markers and restore the local md from `document`.
+
+    Pure with respect to APIs: the caller (CLI handler) does the rich
+    remote pull and hands the resulting AST + raw JSON in. Tests pass
+    hand-built fixtures.
+
+    Refuses if the local md has no Conflict blocks — bailing in that
+    case would silently overwrite the user's legitimate edits.
+    """
+    local = parse_document_md(md_path.read_text())
+    if not has_conflict_blocks(local):
+        raise NoConflictToAbortError(
+            f"no `.gd-conflict` markers in {md_path}; nothing to abort. "
+            "If you want to discard local edits and restore from remote, "
+            "run `gdoc pull <doc>` instead.",
+        )
+    md_path.write_text(emit_document_md(document))
+    state_path = md_path.with_suffix(md_path.suffix + ".pull-state.json")
+    state_path.write_text(json.dumps({
+        "doc_id": document.doc_id,
+        "revision_id": document.revision_id,
+        "docs_json": docs_json,
+    }, default=str) + "\n")
 
 
 def _refresh_sidecar(md_path: Path, *, doc_id: str, docs_service) -> None:

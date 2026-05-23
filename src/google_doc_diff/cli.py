@@ -681,11 +681,14 @@ def _colorize(line: str) -> str:
 @click.option("--continue", "continue_", is_flag=True,
               help="Resume a push after manually resolving conflict markers. "
                    "Refuses to apply if any `.gd-conflict` divs remain in PATH.")
+@click.option("--abort", "abort", is_flag=True,
+              help="Discard conflict markers and overwrite PATH from the remote. "
+                   "Refuses if PATH has no `.gd-conflict` divs.")
 @click.option("--dry-run", "dry_run", is_flag=True,
               help="Compute the OpPlan but don't write anything. Exit 0.")
 @click.option("--plan-only", "plan_only", type=click.Path(path_type=Path), default=None,
               help="Write the OpPlan as JSON to PATH; don't apply.")
-def push(path, doc, new_doc, title, force, continue_, dry_run, plan_only):
+def push(path, doc, new_doc, title, force, continue_, abort, dry_run, plan_only):
     """Push a local .md back to a Google Doc.
 
     \b
@@ -693,6 +696,7 @@ def push(path, doc, new_doc, title, force, continue_, dry_run, plan_only):
       gdoc push PATH.md DOC                   fetch + 3-way merge + apply
       gdoc push PATH.md DOC --force           overwrite remote (skip merge)
       gdoc push PATH.md DOC --continue        resume after resolving markers
+      gdoc push PATH.md DOC --abort           discard markers, restore from remote
       gdoc push PATH.md --new --title TITLE   create a new doc and push
       gdoc push PATH.md DOC --dry-run         compute plan only
       gdoc push PATH.md DOC --plan-only OUT   write plan JSON to OUT
@@ -700,12 +704,15 @@ def push(path, doc, new_doc, title, force, continue_, dry_run, plan_only):
     The default path reads `<PATH>.pull-state.json` (written by
     `gdoc pull`) as the merge base. On conflict it rewrites PATH with
     `.gd-conflict` divs and exits non-zero so you can resolve and re-push
-    via `--continue`. Every successful push refreshes the sidecar so
+    via `--continue` — or `--abort` to throw away your edits and restart
+    from the remote. Every successful push refreshes the sidecar so
     subsequent merges have a fresh base.
     """
     from google_doc_diff.cli_push import (
+        NoConflictToAbortError,
         UnresolvedConflictError,
         format_plan_summary,
+        push_abort,
         push_continue,
         push_dry_run,
         push_force,
@@ -714,8 +721,13 @@ def push(path, doc, new_doc, title, force, continue_, dry_run, plan_only):
         write_plan_json,
     )
 
-    if force and continue_:
-        raise click.ClickException("--force and --continue are mutually exclusive")
+    exclusive = [name for flag, name in (
+        (force, "--force"), (continue_, "--continue"), (abort, "--abort"),
+    ) if flag]
+    if len(exclusive) > 1:
+        raise click.ClickException(
+            f"{' and '.join(exclusive)} are mutually exclusive",
+        )
 
     # Authentication.
     try:
@@ -778,6 +790,21 @@ def push(path, doc, new_doc, title, force, continue_, dry_run, plan_only):
             sys.exit(2)
         click.echo(format_plan_summary(result.plan))
         click.echo("ok")
+        return
+
+    if abort:
+        click.echo(f"aborting {doc_id} push …")
+        try:
+            document, docs_json = _pull_rich_document_with_raw(api, doc_id)
+        except Exception as e:
+            click.echo(f"api: {e}", err=True)
+            sys.exit(2)
+        try:
+            push_abort(path, document=document, docs_json=docs_json)
+        except NoConflictToAbortError as e:
+            click.echo(f"  {e}", err=True)
+            sys.exit(2)
+        click.echo(f"  restored {path} from remote; sidecar refreshed")
         return
 
     click.echo(f"pushing to {doc_id} (merge) …")
