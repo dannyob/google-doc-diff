@@ -678,33 +678,44 @@ def _colorize(line: str) -> str:
               help="Skip 3-way merge; overwrite remote with local. The default "
                    "push path is a fetch-and-merge that writes conflict markers "
                    "into the local md when both sides edited the same block.")
+@click.option("--continue", "continue_", is_flag=True,
+              help="Resume a push after manually resolving conflict markers. "
+                   "Refuses to apply if any `.gd-conflict` divs remain in PATH.")
 @click.option("--dry-run", "dry_run", is_flag=True,
               help="Compute the OpPlan but don't write anything. Exit 0.")
 @click.option("--plan-only", "plan_only", type=click.Path(path_type=Path), default=None,
               help="Write the OpPlan as JSON to PATH; don't apply.")
-def push(path, doc, new_doc, title, force, dry_run, plan_only):
+def push(path, doc, new_doc, title, force, continue_, dry_run, plan_only):
     """Push a local .md back to a Google Doc.
 
     \b
     Modes:
       gdoc push PATH.md DOC                   fetch + 3-way merge + apply
       gdoc push PATH.md DOC --force           overwrite remote (skip merge)
+      gdoc push PATH.md DOC --continue        resume after resolving markers
       gdoc push PATH.md --new --title TITLE   create a new doc and push
       gdoc push PATH.md DOC --dry-run         compute plan only
       gdoc push PATH.md DOC --plan-only OUT   write plan JSON to OUT
 
     The default path reads `<PATH>.pull-state.json` (written by
     `gdoc pull`) as the merge base. On conflict it rewrites PATH with
-    `.gd-conflict` divs and exits non-zero so you can resolve and re-push.
+    `.gd-conflict` divs and exits non-zero so you can resolve and re-push
+    via `--continue`. Every successful push refreshes the sidecar so
+    subsequent merges have a fresh base.
     """
     from google_doc_diff.cli_push import (
+        UnresolvedConflictError,
         format_plan_summary,
+        push_continue,
         push_dry_run,
         push_force,
         push_merge,
         push_new,
         write_plan_json,
     )
+
+    if force and continue_:
+        raise click.ClickException("--force and --continue are mutually exclusive")
 
     # Authentication.
     try:
@@ -758,12 +769,23 @@ def push(path, doc, new_doc, title, force, dry_run, plan_only):
         click.echo("ok")
         return
 
+    if continue_:
+        click.echo(f"pushing to {doc_id} (continue) …")
+        try:
+            result = push_continue(path, doc_id=doc_id, docs_service=api._docs)
+        except UnresolvedConflictError as e:
+            click.echo(f"  {e}", err=True)
+            sys.exit(2)
+        click.echo(format_plan_summary(result.plan))
+        click.echo("ok")
+        return
+
     click.echo(f"pushing to {doc_id} (merge) …")
     result = push_merge(path, doc_id=doc_id, docs_service=api._docs)
     if result.conflicts:
         click.echo(
             f"  {len(result.conflicts)} conflict(s) — rewrote {path} with "
-            "conflict markers; resolve and re-run `gdoc push`.",
+            "conflict markers; resolve and re-run `gdoc push --continue`.",
             err=True,
         )
         sys.exit(2)

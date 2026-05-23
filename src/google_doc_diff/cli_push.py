@@ -24,11 +24,15 @@ from typing import Any
 
 from google_doc_diff.apply.docs_api import apply as apply_docs_api
 from google_doc_diff.ast.from_docs_json import build_document
-from google_doc_diff.ast.nodes import Document, Tab
+from google_doc_diff.ast.nodes import Conflict, Document, Tab
 from google_doc_diff.emit.markdown import emit_document_md
 from google_doc_diff.merge import merge
 from google_doc_diff.ops import OpPlan, diff
 from google_doc_diff.parse.markdown import parse_document_md
+
+
+class UnresolvedConflictError(RuntimeError):
+    """`push --continue` was invoked but the local md still has Conflict blocks."""
 
 
 @dataclass
@@ -41,6 +45,21 @@ class PushResult:
     def __post_init__(self):
         if self.conflicts is None:
             self.conflicts = []
+
+
+def has_conflict_blocks(doc: Document) -> bool:
+    """True iff any tab's block list contains a Conflict node.
+
+    A successful resolution removes the `.gd-conflict` markers, which
+    means parse no longer produces Conflict AST nodes. `push --continue`
+    refuses to apply until this returns False, so the user can't
+    accidentally push a half-resolved file.
+    """
+    for tab in doc.tabs:
+        for block in tab.blocks:
+            if isinstance(block, Conflict):
+                return True
+    return False
 
 
 def push_new(
@@ -71,6 +90,9 @@ def push_new(
     # 3. Apply.
     ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
 
+    # 4. Write the sidecar so subsequent pushes can merge against this state.
+    _refresh_sidecar(md_path, doc_id=doc_id, docs_service=docs_service)
+
     return PushResult(doc_id=doc_id, plan=plan, ack=ack)
 
 
@@ -96,6 +118,7 @@ def push_force(
 
     plan = diff(remote, local)
     ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
+    _refresh_sidecar(md_path, doc_id=doc_id, docs_service=docs_service)
     return PushResult(doc_id=doc_id, plan=plan, ack=ack)
 
 
@@ -140,7 +163,67 @@ def push_merge(
     # No conflicts — diff remote -> merged and apply.
     plan = diff(remote, merged)
     ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
+    _refresh_sidecar(md_path, doc_id=doc_id, docs_service=docs_service)
     return PushResult(doc_id=doc_id, plan=plan, ack=ack, conflicts=[])
+
+
+def push_continue(
+    md_path: Path,
+    *,
+    doc_id: str,
+    docs_service,
+) -> PushResult:
+    """Push the user's resolved local md, refusing if conflict markers remain.
+
+    Workflow:
+      1. Default `gdoc push` detected a 3-way conflict and rewrote the md
+         with `.gd-conflict` markers.
+      2. User edits the markers down to whichever side(s) they want.
+      3. `gdoc push --continue` reparses; if no Conflict blocks remain,
+         it diffs (remote -> local) and applies, then refreshes the
+         sidecar so the next push has a fresh merge base.
+
+    Raises UnresolvedConflictError if any Conflict node survives parse.
+    """
+    md = md_path.read_text()
+    local = parse_document_md(md)
+    if has_conflict_blocks(local):
+        n = sum(
+            1 for tab in local.tabs for b in tab.blocks if isinstance(b, Conflict)
+        )
+        raise UnresolvedConflictError(
+            f"{n} conflict block(s) remain in {md_path}; resolve the "
+            "`<<<<<<< LOCAL` / `=======` / `>>>>>>> REMOTE` markers and "
+            "re-run `gdoc push --continue`.",
+        )
+
+    docs_payload = docs_service.documents().get(
+        documentId=doc_id, includeTabsContent=True,
+    ).execute()
+    remote = build_document(docs_payload)
+    plan = diff(remote, local)
+    ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
+    _refresh_sidecar(md_path, doc_id=doc_id, docs_service=docs_service)
+    return PushResult(doc_id=doc_id, plan=plan, ack=ack)
+
+
+def _refresh_sidecar(md_path: Path, *, doc_id: str, docs_service) -> None:
+    """Re-fetch the remote and overwrite the `.pull-state.json` sidecar.
+
+    Called after every successful apply so the next merge sees the
+    post-push state as its base. Without this, a resolution loop can
+    re-detect "the same" conflict because the sidecar's pull-time
+    snapshot hasn't caught up.
+    """
+    docs_payload = docs_service.documents().get(
+        documentId=doc_id, includeTabsContent=True,
+    ).execute()
+    state_path = md_path.with_suffix(md_path.suffix + ".pull-state.json")
+    state_path.write_text(json.dumps({
+        "doc_id": doc_id,
+        "revision_id": docs_payload.get("revisionId", ""),
+        "docs_json": docs_payload,
+    }, default=str) + "\n")
 
 
 def _load_base_for_merge(md_path: Path, *, fallback: Document) -> Document:
