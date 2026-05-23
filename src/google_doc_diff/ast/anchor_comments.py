@@ -31,14 +31,45 @@ def anchor_comments(doc: Document) -> Document:
 
     Mutates the AST in place. Comments still appear in `doc.comments`; this
     just ensures they have a referrer in the prose so the emitter renders
-    them. Comments whose snippet can't be found are marked orphaned.
+    them. Comments whose snippet can't be found — or whose snippet appears
+    more than once in the doc — are marked orphaned. The multiple-match
+    guard prevents stale comments on recurring-boilerplate docs (weekly
+    meeting notes, etc.) from anchoring to the wrong week's content.
     """
+    full_text = _full_text(doc.tabs)
     for cmt in doc.comments.values():
         if cmt.deleted or not cmt.quoted_text:
+            continue
+        if full_text.count(cmt.quoted_text) != 1:
+            cmt.orphaned = True
             continue
         if not _try_anchor_in_tabs(doc.tabs, cmt):
             cmt.orphaned = True
     return doc
+
+
+def _full_text(tabs: list[Tab]) -> str:
+    """Concatenate all Run text across all tabs for ambiguity detection."""
+    parts: list[str] = []
+
+    def _walk_blocks(blocks):
+        for block in blocks:
+            if isinstance(block, (Paragraph, Heading, ListItem)):
+                for r in block.runs:
+                    if isinstance(r, Run):
+                        parts.append(r.text)
+            elif isinstance(block, Table):
+                for row in block.rows:
+                    if isinstance(row, Row):
+                        for cell in row.cells:
+                            if isinstance(cell, Cell):
+                                _walk_blocks(cell.blocks)
+
+    for tab in tabs:
+        _walk_blocks(tab.blocks)
+        for child in tab.children:
+            _walk_blocks(child.blocks)
+    return "".join(parts)
 
 
 def _try_anchor_in_tabs(tabs: list[Tab], cmt: Comment) -> bool:

@@ -247,14 +247,17 @@ def _render_block_for_insert(block):
 
     if isinstance(block, ListItem):
         runs = list(block.runs or [])
-        text = "".join(r.text for r in runs) + "\n"
-        ranges = []
+        parts: list[str] = []
+        ranges: list[tuple[int, int, object]] = []
         off = 0
         for r in runs:
-            if not r.text:
+            t = getattr(r, "text", None)
+            if not t:
                 continue
-            ranges.append((off, off + len(r.text), r.formatting))
-            off += len(r.text)
+            parts.append(t)
+            ranges.append((off, off + len(t), getattr(r, "formatting", None)))
+            off += len(t)
+        text = "".join(parts) + "\n"
         preset = _BULLET_PRESETS.get(block.kind, "BULLET_DISC_CIRCLE_SQUARE")
         return text, ranges, {"namedStyleType": "NORMAL_TEXT"}, preset
 
@@ -382,7 +385,6 @@ def _iter_all_tabs(tabs):
 
 
 def _is_paragraph_like(block) -> bool:
-    from google_doc_diff.ast.nodes import Heading, ListItem, Paragraph
     return isinstance(block, (Paragraph, Heading, ListItem))
 
 
@@ -437,7 +439,7 @@ def apply(
     """
     if not plan:
         return {}
-    doc = service.documents().get(documentId=doc_id).execute()
+    doc = service.documents().get(documentId=doc_id, includeTabsContent=True).execute()
     block_index, end_of_body = block_index_resolver(doc)
     reqs = translate(plan, block_index=block_index, end_of_body=end_of_body)
     if not reqs:

@@ -213,7 +213,7 @@ def push_continue(
     docs_payload = docs_service.documents().get(
         documentId=doc_id, includeTabsContent=True,
     ).execute()
-    remote = build_document(docs_payload)
+    remote = parse_document_md(emit_document_md(build_document(docs_payload)))
     plan = diff(remote, local)
     ack = apply_docs_api(plan, doc_id=doc_id, service=docs_service)
     _refresh_sidecar(md_path, doc_id=doc_id, docs_service=docs_service)
@@ -257,22 +257,30 @@ def _refresh_sidecar(md_path: Path, *, doc_id: str, docs_service) -> None:
     """Re-fetch the remote and overwrite the `.pull-state.json` sidecar.
 
     Called after every successful apply so the next merge sees the
-    post-push state as its base. Without this, a resolution loop can
-    re-detect "the same" conflict because the sidecar's pull-time
-    snapshot hasn't caught up.
+    post-push state as its base. Best-effort: if the re-fetch or write
+    fails, the push already succeeded — warn via stderr rather than
+    crashing and misleading the user into thinking the push failed.
     """
-    docs_payload = docs_service.documents().get(
-        documentId=doc_id, includeTabsContent=True,
-    ).execute()
-    base_doc = build_document(docs_payload)
-    base_md = emit_document_md(base_doc)
-    state_path = md_path.with_suffix(md_path.suffix + ".pull-state.json")
-    state_path.write_text(json.dumps({
-        "doc_id": doc_id,
-        "revision_id": docs_payload.get("revisionId", ""),
-        "docs_json": docs_payload,
-        "base_md": base_md,
-    }, default=str) + "\n")
+    import sys
+    try:
+        docs_payload = docs_service.documents().get(
+            documentId=doc_id, includeTabsContent=True,
+        ).execute()
+        base_doc = build_document(docs_payload)
+        base_md = emit_document_md(base_doc)
+        state_path = md_path.with_suffix(md_path.suffix + ".pull-state.json")
+        state_path.write_text(json.dumps({
+            "doc_id": doc_id,
+            "revision_id": docs_payload.get("revisionId", ""),
+            "docs_json": docs_payload,
+            "base_md": base_md,
+        }, default=str) + "\n")
+    except Exception as e:
+        print(
+            f"warning: sidecar refresh failed ({e}); next merge may "
+            "re-detect changes. Re-pull to fix.",
+            file=sys.stderr,
+        )
 
 
 def _load_base_for_merge(md_path: Path, *, fallback: Document) -> Document:
@@ -294,7 +302,10 @@ def _load_base_for_merge(md_path: Path, *, fallback: Document) -> Document:
     state_path = md_path.with_suffix(md_path.suffix + ".pull-state.json")
     if not state_path.exists():
         return fallback
-    raw = json.loads(state_path.read_text())
+    try:
+        raw = json.loads(state_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return fallback
     base_md = raw.get("base_md")
     if base_md:
         return parse_document_md(base_md)

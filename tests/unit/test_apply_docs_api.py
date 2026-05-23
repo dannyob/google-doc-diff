@@ -303,7 +303,7 @@ class _FakeService:
     def documents(self):  # noqa: D401  (mimics google client shape)
         return self
 
-    def get(self, documentId):  # noqa
+    def get(self, documentId=None, includeTabsContent=None):  # noqa
         self._last_doc_id = documentId
         return _ExecWrapper(self._doc)
 
