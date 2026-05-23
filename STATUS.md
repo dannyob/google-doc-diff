@@ -31,6 +31,7 @@ All checks passed!
 | A | `ast/from_docs_json.py` | Pull-time `paragraph_id` synthesis (`p-{tab_idx}-{block_idx}`, skipping visually-empty paragraphs); aligned `build_block_index_from_docs_document` keys |
 | B | `ast/nodes.Conflict`, `merge/three_way.py`, emit/parse for `.gd-conflict` git-style markers, `cli_push.push_merge`, `.pull-state.json` sidecar | Default `gdoc push` runs 3-way merge against the pull-time base; writes conflict markers into local md on overlapping edits |
 | C | `cli_push.push_continue`, `_refresh_sidecar`, `has_conflict_blocks` | `gdoc push --continue` reparses the (now hopefully resolved) md and applies; every successful push refreshes the sidecar so the merge base advances |
+| D | `cli_push.push_abort`, `NoConflictToAbortError` | `gdoc push --abort` re-pulls the remote and overwrites the conflicted md + sidecar. Refuses when no `.gd-conflict` blocks exist so it can't silently delete real local edits. |
 
 ## Quick smoke test
 
@@ -107,10 +108,6 @@ remain follow-ups:
 - **Authoring comments / suggestions / chips.** Reading them stays as
   v1; writing them needs the `/save` channel or Drive Comments v3 with
   new request shapes.
-- **`--abort` for conflict resolution.** `--continue` ships; `--abort`
-  (discard markers and re-pull) is still a follow-up. Today the
-  equivalent is just `gdoc pull <doc>` which overwrites the conflicted
-  md.
 - **Stable IDs for ListItems.** `_block_id` returns None for ListItem,
   so list reorderings/edits diff as anonymous inserts. Giving ListItem
   a `paragraph_id` (parallel to Paragraph/Heading) + stamping it in
@@ -174,6 +171,8 @@ docs/superpowers/
 
 ```
 $ git log --oneline main..HEAD
+b58c194 push: --abort discards conflict markers and restores from remote
+210dbc6 docs: STATUS.md tracks --continue + sidecar refresh shipping
 b5c67f6 push: --continue resolves conflicts; refresh sidecar after every apply
 f3dd092 docs: STATUS.md reflects pull-time IDs, surgical force-push, 3-way merge
 105bd01 cli: default `gdoc push` to 3-way merge; sidecar holds the base
@@ -198,14 +197,14 @@ f2c8263 emit: round-trip carriers — frontmatter gdoc: ns, paragraph_id attrs, 
 
 ## Picking up the thread
 
-Three-way merge with `--continue` and live sidecar refresh now land.
-Natural next chunks:
+Three-way merge with `--continue`, `--abort`, and live sidecar refresh
+all land. Natural next chunks:
 
-1. **`--abort`**: drop conflict markers and re-pull. Today `gdoc pull
-   <doc>` is the manual equivalent.
-2. **ListItem `paragraph_id`**: parallel to Paragraph/Heading;
+1. **ListItem `paragraph_id`**: parallel to Paragraph/Heading;
    removes the "anonymous insert" fallback for list edits.
-3. **Comments/suggestions/chips merge**: lifecycle ops live in their
+2. **Comments/suggestions/chips merge**: lifecycle ops live in their
    own diff routines per the spec — currently they round-trip read-
    only, not via the merger.
+3. **`/save` channel backend** for chip authoring (existing routing
+   slot is in `apply/policy.py`).
 
