@@ -188,7 +188,7 @@ def _block_id(block) -> str | None:
     if isinstance(block, Conflict):
         return block.conflict_id
     if isinstance(block, ListItem):
-        return None
+        return block.paragraph_id
     return None
 
 
@@ -213,6 +213,10 @@ def _block_eq(a, b) -> bool:
         return False
     if isinstance(a, (Paragraph, Heading)):
         if isinstance(a, Heading) and a.level != b.level:
+            return False
+        return list(a.runs or []) == list(b.runs or [])
+    if isinstance(a, ListItem):
+        if a.level != b.level or a.kind != b.kind:
             return False
         return list(a.runs or []) == list(b.runs or [])
     return a == b
