@@ -331,29 +331,90 @@ def _rgb(hex_str: str) -> dict:
 
 
 def build_block_index_from_docs_document(doc: dict) -> tuple[BlockIndex, int]:
-    """Walk a Docs API documents.get() response and assign each paragraph an id.
+    """Map each paragraph_id to its absolute index range in the live doc.
 
-    For overnight scope we use *positional* synthetic ids `p-0`, `p-1`, ...
-    keyed by document order. That's good enough for create-from-scratch
-    (where the document is built fresh and we know the order) but will be
-    refined when push merges against an existing doc that already has
-    paragraph_ids in its markdown counterpart.
+    The keys MUST match the paragraph_ids that ``ast.from_docs_json`` stamps
+    on the same doc — otherwise translate() looks up an id the index
+    doesn't have and silently drops the op. We get that alignment by
+    building the AST and the index from the same docs JSON, walking the
+    AST and the doc's paragraph elements in lockstep.
+
+    Empty paragraphs (Docs' trailing-newline artifact) get no
+    paragraph_id in the AST and are correspondingly absent from the
+    index.
     """
-    body = doc.get("body", {}).get("content", []) or []
+    from google_doc_diff.ast.from_docs_json import build_document
+
+    ast_doc = build_document(doc)
+    flat_ast: list = []
+    for tab in _iter_all_tabs(ast_doc.tabs):
+        flat_ast.extend(tab.blocks)
+
     idx: BlockIndex = {}
-    p_count = 0
     end = 1
-    for el in body:
-        para = el.get("paragraph")
-        if para is None:
-            end = el.get("endIndex", end)
+    para_iter = _iter_paragraph_elements(doc)
+    for block in flat_ast:
+        if not _is_paragraph_like(block):
             continue
+        try:
+            el = next(para_iter)
+        except StopIteration:
+            break
         start = el.get("startIndex", 1)
         end_ix = el.get("endIndex", start)
-        idx[f"p-{p_count}"] = (start, end_ix)
-        p_count += 1
-        end = end_ix
+        pid = getattr(block, "paragraph_id", None)
+        if pid is not None:
+            idx[pid] = (start, end_ix)
+        end = max(end, end_ix)
+
+    # End-of-body is the last seen endIndex across all elements (incl. the
+    # trailing empty paragraph), so InsertBlock with after_id at the tail
+    # lands at the right place.
+    for el in _iter_all_elements(doc):
+        end = max(end, el.get("endIndex", end))
     return idx, end
+
+
+def _iter_all_tabs(tabs):
+    for tab in tabs:
+        yield tab
+        yield from _iter_all_tabs(tab.children)
+
+
+def _is_paragraph_like(block) -> bool:
+    from google_doc_diff.ast.nodes import Heading, ListItem, Paragraph
+    return isinstance(block, (Paragraph, Heading, ListItem))
+
+
+def _iter_paragraph_elements(doc):
+    """Yield paragraph dicts in the same document order build_document uses."""
+    tabs_data = doc.get("tabs")
+    if tabs_data:
+        def walk(tabs):
+            for t in tabs:
+                body = t.get("documentTab", {}).get("body", {})
+                for el in body.get("content") or []:
+                    if "paragraph" in el:
+                        yield el
+                yield from walk(t.get("childTabs") or [])
+        yield from walk(tabs_data)
+    else:
+        for el in (doc.get("body", {}).get("content") or []):
+            if "paragraph" in el:
+                yield el
+
+
+def _iter_all_elements(doc):
+    tabs_data = doc.get("tabs")
+    if tabs_data:
+        def walk(tabs):
+            for t in tabs:
+                body = t.get("documentTab", {}).get("body", {})
+                yield from (body.get("content") or [])
+                yield from walk(t.get("childTabs") or [])
+        yield from walk(tabs_data)
+    else:
+        yield from (doc.get("body", {}).get("content") or [])
 
 
 def apply(

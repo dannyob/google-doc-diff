@@ -163,7 +163,14 @@ def _previous_shared_id(blocks: list, idx: int, allowed: set[str]) -> str | None
 def _content_diff(base_blocks, target_blocks, plan: OpPlan) -> None:
     base_idx = _index_by_id(base_blocks)
     target_idx = _index_by_id(target_blocks)
-    for bid in sorted(set(base_idx) & set(target_idx)):
+    # Walk shared blocks in REVERSE document order so edits to later blocks
+    # land before edits to earlier ones. Combined with descending-offset
+    # ordering within each block, every emitted op sits at indices that
+    # haven't been shifted by anything Docs API will process earlier in
+    # the batch.
+    shared_ids = set(base_idx) & set(target_idx)
+    ordered = sorted(shared_ids, key=lambda b: base_idx[b][0], reverse=True)
+    for bid in ordered:
         _, base_b = base_idx[bid]
         _, target_b = target_idx[bid]
         _diff_block(bid, base_b, target_b, plan)
@@ -184,12 +191,18 @@ def _diff_block(bid: str, base_b, target_b, plan: OpPlan) -> None:
 
 
 def _emit_text_ops(bid: str, base_text: str, target_text: str, plan: OpPlan) -> None:
-    """Convert a textual diff into a minimal sequence of InsertText / DeleteRange."""
+    """Convert a textual diff into a minimal sequence of InsertText / DeleteRange.
+
+    Ops are emitted in DESCENDING offset order. Docs API processes
+    batchUpdate requests sequentially and recomputes indices after each
+    one, so applying right-to-left keeps each op's base-doc offset valid:
+    nothing earlier has shifted the indices that later (lower) ops
+    target. Within a `replace`, we still emit delete-then-insert at the
+    same offset so the original char is gone before the replacement
+    lands.
+    """
     matcher = difflib.SequenceMatcher(a=base_text, b=target_text, autojunk=False)
-    # Walk opcodes in reverse so earlier indices stay valid as we emit
-    # forward-applied ops. Each apply-time op references the *base* doc
-    # offsets; the apply backend takes care of running indices.
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+    for tag, i1, i2, j1, j2 in reversed(matcher.get_opcodes()):
         if tag == "equal":
             continue
         if tag in ("delete", "replace"):

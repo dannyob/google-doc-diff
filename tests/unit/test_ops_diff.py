@@ -142,6 +142,70 @@ def test_text_change_does_not_emit_apply_style_for_changed_region():
     assert styles == []
 
 
+def test_text_edits_across_blocks_in_reverse_document_order():
+    """Edits to a later block must come BEFORE edits to an earlier block.
+
+    Otherwise an earlier-block insert shifts the later block's base
+    offsets, so when the later block's op fires its computed doc index
+    points into the wrong content. Witnessed live: one block grew by 9
+    chars, causing the next block's lone InsertText to land 9 chars
+    earlier than intended.
+    """
+    base = _doc([
+        Paragraph(runs=[Run(text="Paragraph two with more text.")],
+                  paragraph_id="p-A"),
+        Paragraph(runs=[Run(text="Final paragraph.")],
+                  paragraph_id="p-B"),
+    ])
+    target = _doc([
+        Paragraph(runs=[Run(text="Paragraph two has been edited locally.")],
+                  paragraph_id="p-A"),
+        Paragraph(runs=[Run(text="Final paragraph with extra words.")],
+                  paragraph_id="p-B"),
+    ])
+    plan = diff(base, target)
+    text_ops = [o for o in plan if isinstance(o, (InsertText, DeleteRange))]
+    # All ops on p-B should come BEFORE any op on p-A (p-B is the later block).
+    seen_a = False
+    for op in text_ops:
+        if op.block_id == "p-A":
+            seen_a = True
+        elif op.block_id == "p-B":
+            assert not seen_a, (
+                "p-B (later block) ops must precede p-A (earlier block) ops"
+            )
+
+
+def test_multiple_text_edits_emitted_in_descending_offset_order():
+    """Successive Delete/Insert ops on the same block must be ordered so a
+    later op's offset is NOT affected by an earlier op's index shift.
+
+    The natural way to guarantee this is to emit ops in descending offset
+    order (right-to-left). Docs API processes batchUpdate sequentially and
+    recomputes indices after each request — applying right-to-left means
+    each op sits at indices the previous ops haven't touched.
+    """
+    base = _doc([Paragraph(
+        runs=[Run(text="The quick brown fox jumps over the lazy dog")],
+        paragraph_id="p-1",
+    )])
+    target = _doc([Paragraph(
+        runs=[Run(text="The fast brown cat jumps over a sleepy dog")],
+        paragraph_id="p-1",
+    )])
+    plan = diff(base, target)
+    edits = [o for o in plan if isinstance(o, (DeleteRange, InsertText))]
+    # Pair-by-pair, deletes should precede inserts at the same offset; the
+    # whole sequence should be ordered by descending op offset.
+    offsets = [
+        getattr(o, "start", None) if isinstance(o, DeleteRange) else o.offset
+        for o in edits
+    ]
+    # Strictly non-increasing (a delete and insert at the same offset both ok).
+    for prev, cur in zip(offsets, offsets[1:], strict=False):
+        assert cur <= prev, f"text ops out of order: {offsets}"
+
+
 # --- composite ----------------------------------------------------------
 
 

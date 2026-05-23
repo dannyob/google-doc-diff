@@ -209,29 +209,60 @@ def test_delete_block_translates_to_delete_content_range():
 # --- block_index ---------------------------------------------------------
 
 
-def test_build_block_index_from_docs_document_basic():
+def test_build_block_index_uses_ast_paragraph_ids():
+    """block_index keys must MATCH the paragraph_ids stamped by from_docs_json.
+
+    Otherwise translate() looks up `p-0-3` (the AST id) in an index that only
+    has `p-3`, silently drops every op, and apply() returns success with no
+    requests sent — the failure mode that masked the create-from-scratch
+    smoke test's first surgical-edit attempt.
+    """
     doc = {
+        "documentId": "X", "title": "T", "revisionId": "r",
         "body": {"content": [
-            {"startIndex": 1, "endIndex": 7, "paragraph": {}},
-            {"startIndex": 7, "endIndex": 13, "paragraph": {}},
+            {"startIndex": 1, "endIndex": 7,
+             "paragraph": {"elements": [{"textRun": {"content": "first\n"}}]}},
+            {"startIndex": 7, "endIndex": 13,
+             "paragraph": {"elements": [{"textRun": {"content": "second\n"}}]}},
         ]},
     }
     idx, end = build_block_index_from_docs_document(doc)
-    assert idx == {"p-0": (1, 7), "p-1": (7, 13)}
+    assert idx == {"p-0-0": (1, 7), "p-0-1": (7, 13)}
     assert end == 13
 
 
 def test_build_block_index_ignores_section_breaks_etc():
     doc = {
+        "documentId": "X", "title": "T", "revisionId": "r",
         "body": {"content": [
-            {"startIndex": 1, "endIndex": 7, "paragraph": {}},
+            {"startIndex": 1, "endIndex": 7,
+             "paragraph": {"elements": [{"textRun": {"content": "first\n"}}]}},
             {"startIndex": 7, "endIndex": 8, "sectionBreak": {}},
-            {"startIndex": 8, "endIndex": 13, "paragraph": {}},
+            {"startIndex": 8, "endIndex": 13,
+             "paragraph": {"elements": [{"textRun": {"content": "second\n"}}]}},
         ]},
     }
     idx, end = build_block_index_from_docs_document(doc)
-    assert "p-0" in idx and "p-1" in idx
+    # SectionBreak occupies AST index 1, so the second paragraph is p-0-2,
+    # not p-0-1 — matching what _stamp_paragraph_ids produces.
+    assert "p-0-0" in idx and "p-0-2" in idx
     assert end == 13
+
+
+def test_build_block_index_skips_empty_paragraphs():
+    """Empty paragraphs have no paragraph_id (per _stamp_paragraph_ids), so
+    they shouldn't appear in the block_index either."""
+    doc = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "body": {"content": [
+            {"startIndex": 1, "endIndex": 7,
+             "paragraph": {"elements": [{"textRun": {"content": "real\n"}}]}},
+            {"startIndex": 7, "endIndex": 8,
+             "paragraph": {"elements": [{"textRun": {"content": "\n"}}]}},
+        ]},
+    }
+    idx, _ = build_block_index_from_docs_document(doc)
+    assert idx == {"p-0-0": (1, 7)}
 
 
 # --- apply runner --------------------------------------------------------

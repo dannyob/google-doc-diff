@@ -117,11 +117,38 @@ def _stamp_paragraph_ids(tabs: list) -> None:
         for ti, tab in enumerate(tab_list):
             base = f"{prefix}{ti}" if prefix else str(ti)
             for bi, block in enumerate(tab.blocks):
-                if isinstance(block, (Paragraph, Heading)) and block.paragraph_id is None:
-                    block.paragraph_id = f"p-{base}-{bi}"
+                if not isinstance(block, (Paragraph, Heading)):
+                    continue
+                if block.paragraph_id is not None:
+                    continue
+                # Skip visually-empty blocks. Docs always ends the body with
+                # a trailing empty paragraph; stamping it would round-trip
+                # back as an empty `::: {#p-…}` fence, then later diff as
+                # a phantom DeleteBlock when the local md drops it.
+                if _block_is_empty(block.runs):
+                    continue
+                block.paragraph_id = f"p-{base}-{bi}"
             if tab.children:
                 _walk(tab.children, f"{base}.")
     _walk(tabs, "")
+
+
+def _block_is_empty(runs) -> bool:
+    """True iff a block carries no visible text content.
+
+    Runs can be Run / SmartChip / Suggestion* / etc. A SmartChip, image,
+    or suggestion is "visible" regardless of any `.text` attribute, so we
+    only treat a block as empty when EVERY run is a Run with whitespace
+    text. (Anything non-Run counts as content.)
+    """
+    if not runs:
+        return True
+    for r in runs:
+        if not isinstance(r, Run):
+            return False
+        if r.text and r.text.strip():
+            return False
+    return True
 
 
 def _build_comments(comments: list[dict]) -> dict[str, Comment]:

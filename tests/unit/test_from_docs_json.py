@@ -80,6 +80,27 @@ def test_paragraph_ids_stamped_on_pull():
     assert [b.paragraph_id for b in blocks] == ids2
 
 
+def test_paragraph_ids_not_stamped_on_empty_paragraphs():
+    """Docs' trailing empty paragraph must not get an id.
+
+    Otherwise a fresh pull rounds-trips with `::: {#p-…}` empty fences
+    that the markdown parser drops, and the next push-diff sees a
+    phantom DeleteBlock for the empty paragraph that didn't survive
+    parsing.
+    """
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "body": {"content": [
+            {"paragraph": {"elements": [{"textRun": {"content": "real content\n"}}]}},
+            {"paragraph": {"elements": [{"textRun": {"content": "\n"}}]}},  # trailing blank
+        ]},
+    }
+    doc = build_document(j)
+    blocks = doc.tabs[0].blocks
+    assert blocks[0].paragraph_id is not None  # real paragraph keeps id
+    assert blocks[1].paragraph_id is None       # empty paragraph stays anonymous
+
+
 def test_paragraph_ids_unique_across_tabs():
     """Tab-prefixed ids stay unique when a doc has multiple tabs."""
     j = {
