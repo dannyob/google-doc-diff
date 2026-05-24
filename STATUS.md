@@ -1,210 +1,140 @@
 # round-trip branch — status
 
 Branch: `worktree-round-trip` (worktree at `.claude/worktrees/round-trip`)
-Started overnight 2026-05-13; round-trip + 3-way merge wired in
-2026-05-22 → 2026-05-23 follow-up session. Originally followed
+Started overnight 2026-05-13; round-trip + 3-way merge + comment anchoring
+across 2026-05-22 → 2026-05-23 sessions. Originally followed
 [`docs/superpowers/plans/2026-05-14-gdoc-round-trip.md`](docs/superpowers/plans/2026-05-14-gdoc-round-trip.md);
 later work extends past it.
 
-## What landed
+## What works (live-verified)
 
-The seven chunks of the original implementation plan plus Chunks A/B
-of the follow-up. All green:
+| Flow | Ops generated |
+|---|---|
+| `gdoc push file.md --new --title "..."` | Creates doc from markdown. H1–H3, paragraphs, bold/italic, links, bullets all render. |
+| `gdoc pull DOC` → edit → `gdoc push DOC` | 3-way merge. 1 InsertText for a 1-word change on a 1400-block doc. |
+| `gdoc push DOC --force` | Overwrite remote. Surgical diffs via paragraph_id. |
+| Conflict: both sides edit same block | Writes `<<<<<<< LOCAL` / `=======` / `>>>>>>> REMOTE` markers. |
+| `gdoc push --continue` | Applies resolved md, refreshes sidecar. |
+| `gdoc push --abort` | Discards markers, restores from remote. |
+| Complex docs (925 comments, 63 images, 1400+ blocks) | Normalization prevents phantom diffs. |
 
-```
-$ uv run pytest -q
-346 passed in 0.45s
+393 tests, ruff clean.
 
-$ uv run ruff check src/ tests/
-All checks passed!
-```
+## What landed (by chunk)
 
 | Chunk | Module(s) | What it does |
 |---|---|---|
-| 1 | `ast/nodes.py` | `ParagraphProperties`, paragraph_id on Heading/Paragraph, fuller `StyleDescriptor`, typed `Voter`/`VotingChip`, `Document.gdoc_state` |
-| 2 | `emit/markdown.py`, `styles/css.py` | Frontmatter `gdoc:` namespace, `paragraph_id` attrs, `--ot-*` custom-property CSS for ParagraphProperties |
-| 3 | `parse/markdown.py` | Round-trip parser: frontmatter, headings, paragraphs, pandoc `::: {…}` divs, inline bold/italic/strike/link, lists, code; `parse(emit(ast)) == ast` proven for fixture set |
-| 4 | `ops/{primitives,diff}.py` | `OpPlan` IR + two-phase diff (structural by stable id, content via `difflib`); descending-offset ordering across blocks and within-block |
-| 5 | `apply/{policy,docs_api}.py` | Channel-selection dispatcher; translate primitives to `batchUpdate` Request dicts; runner that fetches + translates + applies; cursor-chained inserts, NORMAL_TEXT named-style reset, paragraph-style-before-text-style ordering, ListItem bullets |
-| 6 | `cli_push.py`, `cli.py` | `gdoc push` with `--new --title`, `--force`, `--dry-run`, `--plan-only PATH` |
-| 7 | `tests/round_trip/` | FakeDocsService + end-to-end property test |
-| A | `ast/from_docs_json.py` | Pull-time `paragraph_id` synthesis (`p-{tab_idx}-{block_idx}`, skipping visually-empty paragraphs); aligned `build_block_index_from_docs_document` keys |
-| B | `ast/nodes.Conflict`, `merge/three_way.py`, emit/parse for `.gd-conflict` git-style markers, `cli_push.push_merge`, `.pull-state.json` sidecar | Default `gdoc push` runs 3-way merge against the pull-time base; writes conflict markers into local md on overlapping edits |
-| C | `cli_push.push_continue`, `_refresh_sidecar`, `has_conflict_blocks` | `gdoc push --continue` reparses the (now hopefully resolved) md and applies; every successful push refreshes the sidecar so the merge base advances |
-| D | `cli_push.push_abort`, `NoConflictToAbortError` | `gdoc push --abort` re-pulls the remote and overwrites the conflicted md + sidecar. Refuses when no `.gd-conflict` blocks exist so it can't silently delete real local edits. |
+| 1 | `ast/nodes.py` | `ParagraphProperties`, paragraph_id on Heading/Paragraph/ListItem, `StyleDescriptor`, `Voter`/`VotingChip`, `Document.gdoc_state`, `Conflict` |
+| 2 | `emit/markdown.py`, `styles/css.py` | Frontmatter `gdoc:` namespace, paragraph_id attrs, `--ot-*` CSS, `.gd-conflict` git-style markers, link class-span fix |
+| 3 | `parse/markdown.py` | Round-trip parser: frontmatter, headings, paragraphs, pandoc `::: {…}` divs, inline formatting, lists with `[]{#id}` prefix, code, `.gd-conflict` opaque parsing |
+| 4 | `ops/{primitives,diff}.py` | `OpPlan` IR + two-phase diff; descending-offset ordering across and within blocks |
+| 5 | `apply/{policy,docs_api}.py` | Channel dispatcher; translate to `batchUpdate`; cursor-chained inserts, NORMAL_TEXT reset, paragraph-before-text-style ordering, ListItem bullets; `includeTabsContent` on fetch |
+| 6 | `cli_push.py`, `cli.py` | `push --new`, `--force`, `--continue`, `--abort`, `--dry-run`, `--plan-only`; `.pull-state.json` sidecar with `base_md`; sidecar refresh after every apply |
+| 7 | `merge/three_way.py` | Block-level 3-way merge with full conflict matrix; ordered pairing for comment anchors |
+| 8 | `ast/anchor_comments.py` | Ordered pairing for ambiguous snippets + `kix_resolver` hook for exact positioning via Chrome cookies |
 
-## Quick smoke test
+## Known issues / follow-ups
 
-```bash
-$ cat > /tmp/sample.md <<'EOF'
----
-title: Sample
-doc_id: ''
-revision_id: ''
-drive_url: ''
-captured_at: '2026-05-14T00:00:00+00:00'
-schema_version: 1
-last_modifying_user: null
-source_mode: pull
-comments_preserved: true
-suggestions_preserved: true
----
+### Parser can't round-trip pandoc `[text]{.class}` spans
 
-# A sample doc
+markdown-it doesn't understand pandoc attribute spans. Comment anchors
+(`[text]{.gd-cmt-anchor #c-XXX}`) and styled spans (`[text]{.gd-style-XXX}`)
+in the emitted markdown get parsed back as literal text. The merge
+layer works around this via emit→parse normalization (both sides go
+through the same lossy pipeline, so they agree on what "unchanged"
+looks like), but the emitted markdown for comments and styled inline
+spans is lossy.
 
-This is a paragraph with **bold** and *italic* text.
+**Fix**: either teach the parser to handle pandoc `[text]{.class}` via a
+pre-processing pass, or switch the emit format for these to something
+markdown-it CAN parse (e.g., HTML `<span>` elements).
 
-## A sub-heading
+### InsertText doesn't carry run_style from the target AST
 
-- list item one
-- list item two
-EOF
+Text-level diffs (`InsertText`) don't carry the target paragraph's run
+formatting. If you insert text that should be bold, the inserted text
+inherits whatever formatting is at the insert point. Strikethrough and
+other formatting on newly inserted text is lost.
 
-$ uv run gdoc push /tmp/sample.md --dry-run
-  InsertBlock    5
+**Fix**: when `_emit_text_ops` produces an `InsertText`, look up the
+target AST's runs at that offset and attach `run_style`.
 
-$ uv run gdoc push /tmp/sample.md --plan-only /tmp/plan.json
-wrote /tmp/plan.json
-  InsertBlock    5
-```
+### Kix resolver not wired to CLI
 
-The `--new` and `--force` flags do call live Google APIs; see the **OAuth
-scope** caveat below before running them.
+The `kix_resolver` hook exists on `anchor_comments()` and
+`build_document()`, and `Comment.anchor` stores the opaque `kix.<id>`
+from the Drive API. But there's no CLI flag to activate Chrome-cookie
+auth for exact comment positioning. The architecture is ready; needs
+glue from `kix_cookies.py` + `kix_dump_model.py` to produce a
+`kix_id → block_index` mapping.
 
-## OAuth scopes
+### `/save` channel backend
 
-`REQUIRED_SCOPES` now includes write scopes:
+Only Docs API is wired in `apply/policy.py`. Authoring comments,
+suggestions, and voting chips needs the Kix `/save` endpoint. The
+routing slot exists; `apply/kix_save.py` is a future addition.
 
-```python
-# src/google_doc_diff/auth.py
-REQUIRED_SCOPES = [
-    "https://www.googleapis.com/auth/documents",
-    "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/drive.file",
-]
-```
+### Multi-tab merge
 
-Users with cached `gdoc auth login` tokens need to re-run it once for
-Google to prompt for the new scopes. Imported gog tokens that already
-carry full `auth/drive` keep working unchanged.
+Works for single-tab docs. Multi-tab would need per-tab merge passes
+and tab-level structural diff (added/removed/reordered tabs).
 
-## Live smoke test (verified)
+### Styling comparison
 
-Source markdown — `# H1`, plain paragraph with `**bold**` and `*italic*`,
-`## H2`, two bulleted list items — pushed and pulled back through Google
-Docs round-trips cleanly: order preserved, headings correct, paragraph
-not styled as heading, bullets rendered, bold/italic preserved. Only
-differences vs source are Google-added (heading anchor ids, doc-level
-revision/captured_at metadata).
+Comparing our emitted HTML rendering against Google's native HTML
+export hasn't been started. The exported files are at `~/tmp/complex-doc.*`.
 
-## What's deliberately not done
+### Code structure debt (from code review)
 
-These were named as overnight scope cuts in the implementation plan and
-remain follow-ups:
+- `_block_id` duplicated in `ops/diff.py` and `merge/three_way.py` —
+  extract to shared helper.
+- Conflict marker constants duplicated in `emit/markdown.py` and
+  `parse/markdown.py`.
+- `_blocks`/`_flatten` functionally identical across diff and merge.
 
-- **`/save` channel backend.** Only Docs API is wired. `apply/kix_save.py`
-  is a future addition; the policy dispatcher already has the routing
-  slot for it.
-- **Authoring comments / suggestions / chips.** Reading them stays as
-  v1; writing them needs the `/save` channel or Drive Comments v3 with
-  new request shapes.
-- **Stable IDs for ListItems.** `_block_id` returns None for ListItem,
-  so list reorderings/edits diff as anonymous inserts. Giving ListItem
-  a `paragraph_id` (parallel to Paragraph/Heading) + stamping it in
-  `_stamp_paragraph_ids` would close this.
-- **Automated live e2e tests** against a real doc. Manual smoke tests
-  cover the cycle today; CI needs a sandbox doc + service account.
-
-Each of these is a candidate for a follow-up branch with its own design.
-
-## File map (added in this branch)
+## File map
 
 ```
 src/google_doc_diff/
   apply/
     __init__.py
-    docs_api.py            <- translate + apply; pure-function core
+    docs_api.py            <- translate + apply; cursor-chained inserts
     policy.py              <- Channel enum + channel_for() dispatcher
   ops/
     __init__.py
     primitives.py          <- OpPlan + 6 frozen-dataclass primitives
     diff.py                <- AST -> OpPlan two-phase diff
-  cli_push.py              <- push_new / push_force / push_merge / push_dry_run
   merge/
     __init__.py
-    three_way.py           <- merge(base, local, remote) -> (merged_ast, conflicts)
-
-  ast/nodes.py             <- extended (ParagraphProperties, paragraph_id,
-                                 VotingChip, Voter, Document.gdoc_state,
-                                 fuller StyleDescriptor, Conflict)
-  ast/from_docs_json.py    <- _stamp_paragraph_ids on pull
-  emit/markdown.py         <- _emit_frontmatter handles gdoc:, paragraph_id
-                                 attrs, _emit_conflict for .gd-conflict divs
-  parse/markdown.py        <- round-trip parser; .gd-conflict opaque parsing
+    three_way.py           <- merge(base, local, remote) -> (merged, conflicts)
+  cli_push.py              <- push_new / push_force / push_merge /
+                              push_continue / push_abort / push_dry_run
+  ast/
+    nodes.py               <- Conflict, ParagraphProperties, paragraph_id,
+                              VotingChip, Voter, Comment.anchor
+    from_docs_json.py      <- _stamp_paragraph_ids; kix_resolver passthrough
+    anchor_comments.py     <- ordered pairing + kix_resolver hook
+  emit/markdown.py         <- .gd-conflict markers, link class-span fix,
+                              []{#id} on ListItems
+  parse/markdown.py        <- .gd-conflict opaque parsing, []{#id} on ListItems
   styles/css.py            <- paragraph_props_to_css for --ot-* output
   cli.py                   <- pull writes .pull-state.json sidecar;
-                              push default = merge; push subcommand wiring
+                              push default = merge with --continue/--abort
 
 tests/
   unit/
     test_ast_extensions.py
-    test_emit_round_trip.py
+    test_emit_round_trip.py    <- pandoc-leak guard tests
     test_parse_markdown.py
     test_ops_primitives.py
-    test_ops_diff.py
+    test_ops_diff.py           <- descending-offset + cross-block ordering
     test_apply_policy.py
-    test_apply_docs_api.py
-    test_cli_push.py
-    test_conflict_round_trip.py
-    test_merge_three_way.py
-    test_from_docs_json.py
+    test_apply_docs_api.py     <- ListItem block_index, chained inserts
+    test_cli_push.py           <- push_merge, push_continue, push_abort
+    test_conflict_round_trip.py <- Conflict + ListItem id round-trip
+    test_merge_three_way.py    <- 44 edge-case merge tests
+    test_from_docs_json.py     <- paragraph_id stamping
   round_trip/
     test_emit_parse_round_trip.py
     test_full_pipeline_mock.py
-
-docs/superpowers/
-  specs/2026-05-14-gdoc-round-trip-design.md   (on main, before this work)
-  plans/2026-05-14-gdoc-round-trip.md          (in this branch)
 ```
-
-## Commits on this branch
-
-```
-$ git log --oneline main..HEAD
-b58c194 push: --abort discards conflict markers and restores from remote
-210dbc6 docs: STATUS.md tracks --continue + sidecar refresh shipping
-b5c67f6 push: --continue resolves conflicts; refresh sidecar after every apply
-f3dd092 docs: STATUS.md reflects pull-time IDs, surgical force-push, 3-way merge
-105bd01 cli: default `gdoc push` to 3-way merge; sidecar holds the base
-47ac3d2 merge: three-way AST merge + Conflict AST + .gd-conflict markers
-bc6385a push: make surgical edits via push --force actually persist
-26b5b64 ast: synthesize paragraph_id on pull so push --force can diff cleanly
-f1c655d docs: update STATUS.md — write scopes shipped, live round-trip verified
-10c6041 apply: make create-from-scratch round-trip actually work
-f0c762d auth: request write scopes so `gdoc push` can hit Docs and Drive
-e0725a0 docs: STATUS.md + README round-trip preview
-9635c8c tests + lint: end-to-end pipeline mock + ruff clean
-25cad6a cli: gdoc push with --new / --force / --dry-run / --plan-only
-d1dc573 apply: policy dispatcher + docs_api translate/apply
-1cfa412 ops: OpPlan IR + AST diff producing structural & content primitives
-60d4939 parse: implement minimum-viable round-trip parser
-f2c8263 emit: round-trip carriers — frontmatter gdoc: ns, paragraph_id attrs, --ot-* CSS
-821539e ast: round-trip extensions (ParagraphProperties, paragraph_id, VotingChip, gdoc_state)
-694a145 plan: gdoc round-trip implementation chunks
-```
-
-(The kix_probes investigation + design spec are on `main`.)
-
-## Picking up the thread
-
-Three-way merge with `--continue`, `--abort`, and live sidecar refresh
-all land. Natural next chunks:
-
-1. **ListItem `paragraph_id`**: parallel to Paragraph/Heading;
-   removes the "anonymous insert" fallback for list edits.
-2. **Comments/suggestions/chips merge**: lifecycle ops live in their
-   own diff routines per the spec — currently they round-trip read-
-   only, not via the merger.
-3. **`/save` channel backend** for chip authoring (existing routing
-   slot is in `apply/policy.py`).
-
