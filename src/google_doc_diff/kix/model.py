@@ -43,7 +43,9 @@ def extract_ot_ops(html: str) -> KixModel | None:
             mv = op.get("mv", revision)
             break
     suggestion_colors = raw.get("suggestionColors", {})
-    return KixModel(ops=ops, revision=revision, model_version=mv, suggestion_colors=suggestion_colors)
+    return KixModel(
+        ops=ops, revision=revision, model_version=mv, suggestion_colors=suggestion_colors
+    )
 
 
 def _find_closing_brace(s: str, start: int) -> int:

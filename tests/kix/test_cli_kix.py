@@ -1,7 +1,7 @@
 """Tests for CLI kix flag parsing."""
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
@@ -12,11 +12,16 @@ def _make_mock_doc():
     from google_doc_diff.ast.nodes import Document, Tab
 
     return Document(
-        doc_id="test", title="Test", revision_id="r1",
+        doc_id="test",
+        title="Test",
+        revision_id="r1",
         drive_url="https://docs.google.com/document/d/test/edit",
-        captured_at=datetime.now(UTC), schema_version=1,
-        last_modifying_user=None, source_mode="pull",
-        comments_preserved=True, suggestions_preserved=True,
+        captured_at=datetime.now(UTC),
+        schema_version=1,
+        last_modifying_user=None,
+        source_mode="pull",
+        comments_preserved=True,
+        suggestions_preserved=True,
         tabs=[Tab(tab_id="t.0", title="Tab 1", level=0, blocks=[])],
     )
 
@@ -34,9 +39,16 @@ def test_no_kix_flag_skips_enrichment(mock_kix, mock_pull, mock_api_cls, mock_cr
 
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, [
-            "pull", _FAKE_DOC_ID, "--no-kix", "--out", "test.md",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "pull",
+                _FAKE_DOC_ID,
+                "--no-kix",
+                "--out",
+                "test.md",
+            ],
+        )
         assert result.exit_code == 0, result.output
         mock_kix.assert_not_called()
 
@@ -52,8 +64,14 @@ def test_kix_enrichment_called_by_default(mock_kix, mock_pull, mock_api_cls, moc
 
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, [
-            "pull", _FAKE_DOC_ID, "--out", "test.md",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "pull",
+                _FAKE_DOC_ID,
+                "--out",
+                "test.md",
+            ],
+        )
         assert result.exit_code == 0, result.output
         mock_kix.assert_called_once()

@@ -71,8 +71,7 @@ def _enrich_comment_anchors(doc: Document, model: KixModel) -> int:
         return 0
 
     active_comments = [
-        c for c in doc.comments.values()
-        if not c.deleted and c.quoted_text and c.anchor
+        c for c in doc.comments.values() if not c.deleted and c.quoted_text and c.anchor
     ]
     if not active_comments:
         return 0
@@ -152,7 +151,7 @@ def _enrich_voting_chips(doc: Document, model: KixModel) -> int:
 
     # Pair positionally
     count = 0
-    for (block, runs, idx), chip_id in zip(smart_chips_in_order, ordered_chip_ids):
+    for (_block, runs, idx), chip_id in zip(smart_chips_in_order, ordered_chip_ids, strict=False):
         data = chips[chip_id]
         voters = [Voter(obfuscated_id=v) for v in data["voters"]]
         replacement = VotingChip(

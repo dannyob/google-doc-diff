@@ -2,7 +2,6 @@
 
 from google_doc_diff.kix.model import KixModel, extract_ot_ops
 
-
 MINIMAL_HTML = """
 <html><head></head><body>
 <script nonce="abc">

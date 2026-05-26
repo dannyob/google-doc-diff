@@ -91,7 +91,8 @@ def load_kix_session(
 
     try:
         raw_jar = browser_cookie3.chrome(
-            cookie_file=str(resolved), domain_name=".google.com",
+            cookie_file=str(resolved),
+            domain_name=".google.com",
         )
     except Exception as exc:
         logger.debug("failed to load Chrome cookies: %s", exc)
@@ -103,9 +104,13 @@ def load_kix_session(
 
     try:
         import requests
+
         url = f"https://docs.google.com/document/d/{doc_id}/edit"
         r = requests.get(
-            url, cookies=jar, timeout=20, allow_redirects=True,
+            url,
+            cookies=jar,
+            timeout=20,
+            allow_redirects=True,
             headers={
                 "user-agent": (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
