@@ -131,7 +131,14 @@ def auth_status_cmd():
 @click.option("--revision", help="Pull a specific revision id (Drive v2).")
 @click.option("--chip-counts/--no-chip-counts", default=True,
               help="Recover voting/reaction chip counts via an extra markdown export call.")
-def pull(doc, out, html_out, extract_assets, revision, chip_counts):
+@click.option("--kix-cookies", type=click.Path(path_type=Path),
+              help="Path to a Chromium Cookies SQLite file for kix enrichment.")
+@click.option("--kix-profile",
+              help="Chrome profile name for kix enrichment (e.g. 'Profile 1').")
+@click.option("--no-kix", is_flag=True,
+              help="Skip kix enrichment even if Chrome cookies are available.")
+@click.option("--verbose", is_flag=True, help="Print enrichment diagnostics.")
+def pull(doc, out, html_out, extract_assets, revision, chip_counts, kix_cookies, kix_profile, no_kix, verbose):
     """Pull a Google Doc and write Markdown (and optionally HTML).
 
     DOC is a doc ID, a Google Docs URL, or the path to an existing local
@@ -155,6 +162,14 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
     except Exception as e:
         click.echo(f"api: {e}", err=True)
         sys.exit(2)
+
+    if not no_kix:
+        _try_kix_enrichment(
+            document, doc_id,
+            kix_cookies=str(kix_cookies) if kix_cookies else None,
+            kix_profile=kix_profile,
+            verbose=verbose,
+        )
 
     md = emit_document_md(document)
 
@@ -624,6 +639,45 @@ def _pull_rich_document_with_raw(api, doc_id, *, chip_counts=True):
         except Exception:
             pass   # best-effort
     return document, docs_json
+
+
+def _try_kix_enrichment(doc, doc_id, *, kix_cookies=None, kix_profile=None, verbose=False):
+    """Attempt kix enrichment; return EnrichResult or None."""
+    try:
+        from google_doc_diff.kix import (
+            enrich_from_kix,
+            extract_ot_ops,
+            load_kix_session,
+        )
+    except ImportError:
+        if verbose:
+            click.echo("kix enrichment: skipped (gdoc[kix] extra not installed)", err=True)
+        return None
+
+    session = load_kix_session(doc_id, cookie_path=kix_cookies, profile_name=kix_profile)
+    if session is None:
+        if verbose:
+            click.echo("kix enrichment: skipped (no Chrome cookies available)", err=True)
+        return None
+
+    model = extract_ot_ops(session.edit_html)
+    if model is None:
+        if verbose:
+            click.echo("kix enrichment: skipped (could not extract OT model)", err=True)
+        return None
+
+    result = enrich_from_kix(doc, model)
+    if verbose:
+        parts = []
+        if result.suggestion_colors_applied:
+            parts.append(f"suggestion colors: {result.suggestion_colors_applied}")
+        if result.comment_anchors_resolved:
+            parts.append(f"comment anchors: {result.comment_anchors_resolved}")
+        if result.voting_chips_enriched:
+            parts.append(f"voting chips: {result.voting_chips_enriched}")
+        summary = ", ".join(parts) if parts else "no enrichments applied"
+        click.echo(f"kix enrichment: applied ({summary})", err=True)
+    return result
 
 
 _VOLATILE_FRONTMATTER_KEYS = ("captured_at", "last_modifying_user", "revision_id")
