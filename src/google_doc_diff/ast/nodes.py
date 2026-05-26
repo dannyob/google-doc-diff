@@ -328,6 +328,7 @@ class Suggestion:
     created_time: datetime
     kind: str                            # 'insertion' | 'deletion' | 'replacement'
     attached_comment_id: str | None = None
+    color: str | None = None             # '#RRGGBB' from kix enrichment
 
 
 @dataclass
