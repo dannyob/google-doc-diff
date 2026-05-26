@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 
 from google_doc_diff.ast.nodes import (
+    Comment,
+    CommentAnchor,
     Document,
     Heading,
     Paragraph,
@@ -10,7 +12,7 @@ from google_doc_diff.ast.nodes import (
     Suggestion,
     Tab,
 )
-from google_doc_diff.kix.enrich import enrich_from_kix
+from google_doc_diff.kix.enrich import build_kix_anchor_map, enrich_from_kix
 from google_doc_diff.kix.model import KixModel
 
 
@@ -101,3 +103,53 @@ class TestSuggestionColors:
         enrich_from_kix(doc, model)
         assert doc.suggestions["suggest.a"].color == "#ff0000"
         assert doc.suggestions["suggest.b"].color == "#00ff00"
+
+
+class TestBuildKixAnchorMap:
+    def test_maps_te_ops_to_byte_offsets(self):
+        ops = [
+            {"ty": "is", "ibi": 0, "s": "First paragraph text. "},
+            {"ty": "is", "ibi": 22, "s": "Second paragraph text."},
+            {"ty": "te", "id": "kix.abc123", "spi": 5},
+            {"ty": "te", "id": "kix.def456", "spi": 25},
+        ]
+        anchor_map = build_kix_anchor_map(ops)
+        assert anchor_map["kix.abc123"] == 5
+        assert anchor_map["kix.def456"] == 25
+
+    def test_empty_ops(self):
+        assert build_kix_anchor_map([]) == {}
+
+
+class TestCommentAnchorEnrichment:
+    def test_enrichment_uses_kix_resolver(self):
+        tab = Tab(
+            tab_id="t.0", title="Tab 1", level=0,
+            blocks=[
+                Paragraph(runs=[Run(text="Hello world")]),
+                Paragraph(runs=[Run(text="Goodbye world")]),
+            ],
+        )
+        doc = _make_doc(
+            tabs=[tab],
+            comments={
+                "c1": Comment(
+                    comment_id="c1", author="a@x.com",
+                    created_time=datetime.now(UTC),
+                    modified_time=datetime.now(UTC),
+                    content="Nice!", quoted_text="Hello",
+                    anchor="kix.anchor1",
+                ),
+            },
+        )
+        # te op places kix.anchor1 at spi=0, which is in block 0
+        # block 0 has "Hello world" (11 chars + 1 newline = offset 0..11)
+        ops = [
+            {"ty": "is", "ibi": 0, "s": "Hello world\nGoodbye world"},
+            {"ty": "te", "id": "kix.anchor1", "spi": 0},
+        ]
+        model = _make_model(ops)
+
+        result = enrich_from_kix(doc, model)
+        # The comment should have been anchored (not orphaned)
+        assert not doc.comments["c1"].orphaned
