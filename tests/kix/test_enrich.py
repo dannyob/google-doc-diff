@@ -9,8 +9,11 @@ from google_doc_diff.ast.nodes import (
     Heading,
     Paragraph,
     Run,
+    SmartChip,
     Suggestion,
     Tab,
+    VotingChip,
+    Voter,
 )
 from google_doc_diff.kix.enrich import build_kix_anchor_map, enrich_from_kix
 from google_doc_diff.kix.model import KixModel
@@ -153,3 +156,81 @@ class TestCommentAnchorEnrichment:
         result = enrich_from_kix(doc, model)
         # The comment should have been anchored (not orphaned)
         assert not doc.comments["c1"].orphaned
+
+
+class TestVotingChipEnrichment:
+    def test_enriches_smartchip_with_voting_data(self):
+        tab = Tab(
+            tab_id="t.0", title="Tab 1", level=0,
+            blocks=[
+                Paragraph(runs=[
+                    Run(text="Vote here: "),
+                    SmartChip(kind="voting", data={"rendered": "(➕ 2)"}, display_text="(➕ 2)"),
+                ]),
+            ],
+        )
+        doc = _make_doc(tabs=[tab])
+        ops = [
+            {"ty": "is", "ibi": 0, "s": "Vote here: "},
+            {"ty": "ae", "et": "emoji-voting", "id": "kix.chip1", "epm": {}},
+            {"ty": "te", "id": "kix.chip1", "spi": 11},
+            {"ty": "nm", "nmr": ["dtvc", "kix.chip1", False],
+             "nmc": ["voting-chip-populate", "➕",
+                     [{"ui": {"ui_oi": "voter1"}}, {"ui": {"ui_oi": "voter2"}}],
+                     True, "sig123"]},
+        ]
+        model = _make_model(ops)
+
+        result = enrich_from_kix(doc, model)
+        assert result.voting_chips_enriched == 1
+
+        block = doc.tabs[0].blocks[0]
+        chip = block.runs[1]
+        assert isinstance(chip, VotingChip)
+        assert chip.emoji == "➕"
+        assert len(chip.voters) == 2
+        assert chip.voters[0].obfuscated_id == "voter1"
+        assert chip.current_user_voted is True
+        assert chip.signature == "sig123"
+
+    def test_no_voting_ops_is_noop(self):
+        tab = Tab(
+            tab_id="t.0", title="Tab 1", level=0,
+            blocks=[Paragraph(runs=[Run(text="no chips")])],
+        )
+        doc = _make_doc(tabs=[tab])
+        model = _make_model([])
+
+        result = enrich_from_kix(doc, model)
+        assert result.voting_chips_enriched == 0
+
+    def test_multiple_chips_in_same_paragraph(self):
+        tab = Tab(
+            tab_id="t.0", title="Tab 1", level=0,
+            blocks=[
+                Paragraph(runs=[
+                    SmartChip(kind="voting", data={}, display_text="(👍 1)"),
+                    Run(text=" and "),
+                    SmartChip(kind="voting", data={}, display_text="(🚀 3)"),
+                ]),
+            ],
+        )
+        doc = _make_doc(tabs=[tab])
+        ops = [
+            {"ty": "is", "ibi": 0, "s": " and "},
+            {"ty": "ae", "et": "emoji-voting", "id": "kix.c1", "epm": {}},
+            {"ty": "te", "id": "kix.c1", "spi": 0},
+            {"ty": "nm", "nmr": ["dtvc", "kix.c1", False],
+             "nmc": ["voting-chip-populate", "👍",
+                     [{"ui": {"ui_oi": "v1"}}], False, "s1"]},
+            {"ty": "ae", "et": "emoji-voting", "id": "kix.c2", "epm": {}},
+            {"ty": "te", "id": "kix.c2", "spi": 6},
+            {"ty": "nm", "nmr": ["dtvc", "kix.c2", False],
+             "nmc": ["voting-chip-populate", "🚀",
+                     [{"ui": {"ui_oi": "v2"}}, {"ui": {"ui_oi": "v3"}}, {"ui": {"ui_oi": "v4"}}],
+                     True, "s2"]},
+        ]
+        model = _make_model(ops)
+
+        result = enrich_from_kix(doc, model)
+        assert result.voting_chips_enriched == 2
