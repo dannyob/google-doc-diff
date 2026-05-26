@@ -18,7 +18,7 @@ later work extends past it.
 | `gdoc push --abort` | Discards markers, restores from remote. |
 | Complex docs (925 comments, 63 images, 1400+ blocks) | Normalization prevents phantom diffs. |
 
-393 tests, ruff clean.
+423 tests, ruff clean.
 
 ## What landed (by chunk)
 
@@ -32,6 +32,7 @@ later work extends past it.
 | 6 | `cli_push.py`, `cli.py` | `push --new`, `--force`, `--continue`, `--abort`, `--dry-run`, `--plan-only`; `.pull-state.json` sidecar with `base_md`; sidecar refresh after every apply |
 | 7 | `merge/three_way.py` | Block-level 3-way merge with full conflict matrix; ordered pairing for comment anchors |
 | 8 | `ast/anchor_comments.py` | Ordered pairing for ambiguous snippets + `kix_resolver` hook for exact positioning via Chrome cookies |
+| 9 | `kix/{auth,model,enrich}.py` | Optional kix enrichment layer: Chrome cookie auth, OT model extraction, suggestion colors, comment anchor resolution, voting chip enrichment |
 
 ## Known issues / follow-ups
 
@@ -59,20 +60,13 @@ other formatting on newly inserted text is lost.
 **Fix**: when `_emit_text_ops` produces an `InsertText`, look up the
 target AST's runs at that offset and attach `run_style`.
 
-### Kix resolver not wired to CLI
+### `/save` channel backend (future: suggestion authoring)
 
-The `kix_resolver` hook exists on `anchor_comments()` and
-`build_document()`, and `Comment.anchor` stores the opaque `kix.<id>`
-from the Drive API. But there's no CLI flag to activate Chrome-cookie
-auth for exact comment positioning. The architecture is ready; needs
-glue from `kix_cookies.py` + `kix_dump_model.py` to produce a
-`kix_id → block_index` mapping.
-
-### `/save` channel backend
-
-Only Docs API is wired in `apply/policy.py`. Authoring comments,
-suggestions, and voting chips needs the Kix `/save` endpoint. The
-routing slot exists; `apply/kix_save.py` is a future addition.
+Only Docs API is wired in `apply/policy.py`. Authoring suggestions
+as suggestions (rather than direct edits) needs the Kix `/save`
+endpoint's `iss` op. The routing slot exists; `apply/kix_save.py` is
+a future addition. The `KixSession` already carries the auth material
+needed for `/save` POSTs.
 
 ### Multi-tab merge
 
@@ -118,8 +112,15 @@ src/google_doc_diff/
                               []{#id} on ListItems
   parse/markdown.py        <- .gd-conflict opaque parsing, []{#id} on ListItems
   styles/css.py            <- paragraph_props_to_css for --ot-* output
+  kix/
+    __init__.py              <- public API re-exports
+    auth.py                  <- KixSession, cookie resolution, /edit fetch
+    model.py                 <- KixModel, extract DOCS_modelChunk from HTML
+    enrich.py                <- enrich_from_kix decorator; suggestion colors,
+                                comment anchors, voting chips
   cli.py                   <- pull writes .pull-state.json sidecar;
-                              push default = merge with --continue/--abort
+                              push default = merge with --continue/--abort;
+                              --kix-cookies/--kix-profile/--no-kix on pull
 
 tests/
   unit/
@@ -134,6 +135,11 @@ tests/
     test_conflict_round_trip.py <- Conflict + ListItem id round-trip
     test_merge_three_way.py    <- 44 edge-case merge tests
     test_from_docs_json.py     <- paragraph_id stamping
+  kix/
+    test_model.py              <- OT op extraction from HTML fixtures
+    test_auth.py               <- cookie source resolution (mocked fs)
+    test_enrich.py             <- suggestion colors, anchors, voting chips
+    test_cli_kix.py            <- CLI flag parsing + enrichment integration
   round_trip/
     test_emit_parse_round_trip.py
     test_full_pipeline_mock.py
