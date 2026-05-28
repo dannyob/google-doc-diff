@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -641,23 +642,63 @@ def _pull_rich_document_with_raw(api, doc_id, *, chip_counts=True):
     return document, docs_json
 
 
+def _have_browser_cookie3() -> bool:
+    """True if the optional browser-cookie3 dependency is importable."""
+    try:
+        import browser_cookie3  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+_KIX_VERBOSE_HANDLER = "gdoc-kix-verbose"
+
+
+def _enable_kix_verbose_logging() -> None:
+    """Surface the kix layer's own DEBUG diagnostics (e.g. the exact HTTP
+    status of a failed /edit fetch) to stderr, scoped so urllib3 etc. stay quiet."""
+    logger = logging.getLogger("google_doc_diff.kix")
+    if any(getattr(h, "name", None) == _KIX_VERBOSE_HANDLER for h in logger.handlers):
+        return
+    handler = logging.StreamHandler()
+    handler.name = _KIX_VERBOSE_HANDLER
+    handler.setFormatter(logging.Formatter("kix: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+
 def _try_kix_enrichment(doc, doc_id, *, kix_cookies=None, kix_profile=None, verbose=False):
     """Attempt kix enrichment; return EnrichResult or None."""
-    try:
-        from google_doc_diff.kix import (
-            enrich_from_kix,
-            extract_ot_ops,
-            load_kix_session,
-        )
-    except ImportError:
+    from google_doc_diff.kix import enrich_from_kix, extract_ot_ops, load_kix_session
+    from google_doc_diff.kix.auth import resolve_cookie_path
+
+    if verbose:
+        _enable_kix_verbose_logging()
+
+    if not _have_browser_cookie3():
         if verbose:
-            click.echo("kix enrichment: skipped (gdoc[kix] extra not installed)", err=True)
+            click.echo(
+                "kix enrichment: skipped (browser-cookie3 not installed; "
+                "install the optional extra with `pip install 'google-doc-diff[kix]'`)",
+                err=True,
+            )
+        return None
+
+    if resolve_cookie_path(cookie_path=kix_cookies, profile_name=kix_profile) is None:
+        if verbose:
+            click.echo("kix enrichment: skipped (no Chrome cookies found)", err=True)
         return None
 
     session = load_kix_session(doc_id, cookie_path=kix_cookies, profile_name=kix_profile)
     if session is None:
         if verbose:
-            click.echo("kix enrichment: skipped (no Chrome cookies available)", err=True)
+            click.echo(
+                "kix enrichment: skipped (Chrome cookies found, but the doc's /edit "
+                "page was not authorized — likely the wrong Google account is signed "
+                "in, or that account has no access to this doc)",
+                err=True,
+            )
         return None
 
     model = extract_ot_ops(session.edit_html)

@@ -1,11 +1,12 @@
 """Tests for CLI kix flag parsing."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from google_doc_diff.cli import cli
+from google_doc_diff.cli import _try_kix_enrichment, cli
 
 
 def _make_mock_doc():
@@ -75,3 +76,42 @@ def test_kix_enrichment_called_by_default(mock_kix, mock_pull, mock_api_cls, moc
         )
         assert result.exit_code == 0, result.output
         mock_kix.assert_called_once()
+
+
+class TestSkipDiagnostics:
+    """--verbose should report *why* enrichment was skipped, accurately."""
+
+    def test_no_browser_cookie3_is_distinct(self, capsys):
+        with patch("google_doc_diff.cli._have_browser_cookie3", return_value=False):
+            result = _try_kix_enrichment(_make_mock_doc(), "doc1", verbose=True)
+        assert result is None
+        assert "browser-cookie3" in capsys.readouterr().err
+
+    def test_no_cookies_found(self, capsys):
+        with (
+            patch("google_doc_diff.cli._have_browser_cookie3", return_value=True),
+            patch("google_doc_diff.kix.auth.resolve_cookie_path", return_value=None),
+        ):
+            result = _try_kix_enrichment(_make_mock_doc(), "doc1", verbose=True)
+        assert result is None
+        assert "no Chrome cookies found" in capsys.readouterr().err
+
+    def test_cookies_present_but_unauthorized(self, capsys):
+        with (
+            patch("google_doc_diff.cli._have_browser_cookie3", return_value=True),
+            patch(
+                "google_doc_diff.kix.auth.resolve_cookie_path",
+                return_value=Path("/some/Cookies"),
+            ),
+            patch("google_doc_diff.kix.load_kix_session", return_value=None),
+        ):
+            result = _try_kix_enrichment(_make_mock_doc(), "doc1", verbose=True)
+        assert result is None
+        err = capsys.readouterr().err
+        assert "not authorized" in err
+        assert "account" in err
+
+    def test_silent_when_not_verbose(self, capsys):
+        with patch("google_doc_diff.cli._have_browser_cookie3", return_value=False):
+            _try_kix_enrichment(_make_mock_doc(), "doc1", verbose=False)
+        assert capsys.readouterr().err == ""
