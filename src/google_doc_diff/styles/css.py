@@ -12,11 +12,57 @@ Synthesized classes for inline overrides emit as plain class selectors:
 
 from __future__ import annotations
 
-from google_doc_diff.ast.nodes import Document, StyleDescriptor
+from google_doc_diff.ast.nodes import Document, ParagraphProperties, StyleDescriptor
 from google_doc_diff.styles.classes import (
     NAMED_STYLE_CLASSES,
     is_default_for_named_style,
 )
+
+# Paragraph-property field name -> CSS custom-property name.
+# Custom properties (`--ot-*`) carry OT names directly so the round-trip
+# parser doesn't need to reverse a lossy CSS-property mapping.
+_OT_PROP_NAMES: dict[str, str] = {
+    "alignment": "--ot-alignment",
+    "direction": "--ot-direction",
+    "heading_depth": "--ot-heading-depth",
+    "indent_first_line_pt": "--ot-indent-first-line",
+    "indent_left_pt": "--ot-indent-left",
+    "indent_right_pt": "--ot-indent-right",
+    "keep_lines_together": "--ot-keep-lines-together",
+    "keep_with_next": "--ot-keep-with-next",
+    "line_height": "--ot-line-height",
+    "page_break_before": "--ot-page-break-before",
+    "space_after_pt": "--ot-space-after",
+    "space_before_pt": "--ot-space-before",
+}
+
+
+def _format_ot_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v)
+
+
+def paragraph_props_to_css(pp) -> str:
+    """Render set fields of a ParagraphProperties as `--ot-*: value;` lines.
+
+    Accepts either a ParagraphProperties instance or a plain dict so callers
+    can serialize partial property bags without instantiating. Output is
+    deterministic (sorted by CSS custom-property name) and omits None fields.
+    """
+    if isinstance(pp, ParagraphProperties):
+        items = {k: getattr(pp, k) for k in _OT_PROP_NAMES}
+    else:
+        items = dict(pp)
+    lines = []
+    for key in sorted(_OT_PROP_NAMES):
+        v = items.get(key)
+        if v is None:
+            continue
+        lines.append(f"  {_OT_PROP_NAMES[key]}: {_format_ot_value(v)};")
+    return "\n".join(lines)
 
 # Bare HTML element to pair with each named-style class.
 NAMED_STYLE_ELEMENT: dict[str, str] = {

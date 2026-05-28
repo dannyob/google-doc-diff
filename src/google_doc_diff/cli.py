@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -131,7 +132,14 @@ def auth_status_cmd():
 @click.option("--revision", help="Pull a specific revision id (Drive v2).")
 @click.option("--chip-counts/--no-chip-counts", default=True,
               help="Recover voting/reaction chip counts via an extra markdown export call.")
-def pull(doc, out, html_out, extract_assets, revision, chip_counts):
+@click.option("--kix-cookies", type=click.Path(path_type=Path),
+              help="Path to a Chromium Cookies SQLite file for kix enrichment.")
+@click.option("--kix-profile",
+              help="Chrome profile name for kix enrichment (e.g. 'Profile 1').")
+@click.option("--no-kix", is_flag=True,
+              help="Skip kix enrichment even if Chrome cookies are available.")
+@click.option("--verbose", is_flag=True, help="Print enrichment diagnostics.")
+def pull(doc, out, html_out, extract_assets, revision, chip_counts, kix_cookies, kix_profile, no_kix, verbose):
     """Pull a Google Doc and write Markdown (and optionally HTML).
 
     DOC is a doc ID, a Google Docs URL, or the path to an existing local
@@ -151,16 +159,34 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts):
         sys.exit(2)
 
     try:
-        document = _pull_rich_document(api, doc_id, chip_counts=chip_counts)
+        document, docs_json = _pull_rich_document_with_raw(api, doc_id, chip_counts=chip_counts)
     except Exception as e:
         click.echo(f"api: {e}", err=True)
         sys.exit(2)
+
+    if not no_kix:
+        _try_kix_enrichment(
+            document, doc_id,
+            kix_cookies=str(kix_cookies) if kix_cookies else None,
+            kix_profile=kix_profile,
+            verbose=verbose,
+        )
 
     md = emit_document_md(document)
 
     out_path = out or path_hint or Path(_slugify(document.title) + ".md")
     out_path.write_text(md)
     click.echo(f"wrote {out_path}")
+
+    # Write the merge-base sidecar so `gdoc push` (default = 3-way merge)
+    # has the doc's pull-time state to diff against.
+    state_path = out_path.with_suffix(out_path.suffix + ".pull-state.json")
+    state_path.write_text(json.dumps({
+        "doc_id": doc_id,
+        "revision_id": document.revision_id,
+        "docs_json": docs_json,
+        "base_md": md,
+    }, default=str) + "\n")
 
     if html_out:
         html_path = Path(html_out)
@@ -589,6 +615,17 @@ def _pull_rich_document(api, doc_id, *, chip_counts=True):
     and the AST contains PUA widget placeholders) cross-references with the
     markdown export to recover chip emoji + counts.
     """
+    document, _docs_json = _pull_rich_document_with_raw(api, doc_id, chip_counts=chip_counts)
+    return document
+
+
+def _pull_rich_document_with_raw(api, doc_id, *, chip_counts=True):
+    """Like _pull_rich_document but also returns the raw docs_json.
+
+    `gdoc push` uses the raw JSON to write a `.pull-state.json` sidecar so a
+    subsequent push has the AST snapshot at pull-time available as the
+    three-way merge base.
+    """
     docs_json = api.get_document(doc_id)
     comments_json = api.list_comments(doc_id)
     document = build_document(docs_json, comments_json)
@@ -602,7 +639,84 @@ def _pull_rich_document(api, doc_id, *, chip_counts=True):
                 attach_widget_renderings(document, md_text)
         except Exception:
             pass   # best-effort
-    return document
+    return document, docs_json
+
+
+def _have_browser_cookie3() -> bool:
+    """True if the optional browser-cookie3 dependency is importable."""
+    try:
+        import browser_cookie3  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+_KIX_VERBOSE_HANDLER = "gdoc-kix-verbose"
+
+
+def _enable_kix_verbose_logging() -> None:
+    """Surface the kix layer's own DEBUG diagnostics (e.g. the exact HTTP
+    status of a failed /edit fetch) to stderr, scoped so urllib3 etc. stay quiet."""
+    logger = logging.getLogger("google_doc_diff.kix")
+    if any(getattr(h, "name", None) == _KIX_VERBOSE_HANDLER for h in logger.handlers):
+        return
+    handler = logging.StreamHandler()
+    handler.name = _KIX_VERBOSE_HANDLER
+    handler.setFormatter(logging.Formatter("kix: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+
+def _try_kix_enrichment(doc, doc_id, *, kix_cookies=None, kix_profile=None, verbose=False):
+    """Attempt kix enrichment; return EnrichResult or None."""
+    from google_doc_diff.kix import enrich_from_kix, extract_ot_ops, load_kix_session
+    from google_doc_diff.kix.auth import resolve_cookie_path
+
+    if verbose:
+        _enable_kix_verbose_logging()
+
+    if not _have_browser_cookie3():
+        if verbose:
+            click.echo(
+                "kix enrichment: skipped (browser-cookie3 not installed; "
+                "install the optional extra with `pip install 'google-doc-diff[kix]'`)",
+                err=True,
+            )
+        return None
+
+    if resolve_cookie_path(cookie_path=kix_cookies, profile_name=kix_profile) is None:
+        if verbose:
+            click.echo("kix enrichment: skipped (no Chrome cookies found)", err=True)
+        return None
+
+    session = load_kix_session(doc_id, cookie_path=kix_cookies, profile_name=kix_profile)
+    if session is None:
+        if verbose:
+            click.echo(
+                "kix enrichment: skipped (Chrome cookies found, but the doc's /edit "
+                "page was not authorized — likely the wrong Google account is signed "
+                "in, or that account has no access to this doc)",
+                err=True,
+            )
+        return None
+
+    model = extract_ot_ops(session.edit_html)
+    if model is None:
+        if verbose:
+            click.echo("kix enrichment: skipped (could not extract OT model)", err=True)
+        return None
+
+    result = enrich_from_kix(doc, model)
+    if verbose:
+        parts = []
+        if result.suggestion_colors_applied:
+            parts.append(f"suggestion colors: {result.suggestion_colors_applied}")
+        if result.voting_chips_enriched:
+            parts.append(f"voting chips: {result.voting_chips_enriched}")
+        summary = ", ".join(parts) if parts else "no enrichments applied"
+        click.echo(f"kix enrichment: applied ({summary})", err=True)
+    return result
 
 
 _VOLATILE_FRONTMATTER_KEYS = ("captured_at", "last_modifying_user", "revision_id")
@@ -645,6 +759,159 @@ def _colorize(line: str) -> str:
     if line.startswith("@@"):
         return f"\033[36m{line}\033[0m"
     return line
+
+
+@cli.command()
+@click.argument("path", type=click.Path(path_type=Path, exists=True))
+@click.argument("doc", required=False)
+@click.option("--new", "new_doc", is_flag=True,
+              help="Create a fresh Google Doc and push to it (instead of DOC).")
+@click.option("--title", default=None,
+              help="Title for --new. Defaults to the markdown's frontmatter title.")
+@click.option("--force", "force", is_flag=True,
+              help="Skip 3-way merge; overwrite remote with local. The default "
+                   "push path is a fetch-and-merge that writes conflict markers "
+                   "into the local md when both sides edited the same block.")
+@click.option("--continue", "continue_", is_flag=True,
+              help="Resume a push after manually resolving conflict markers. "
+                   "Refuses to apply if any `.gd-conflict` divs remain in PATH.")
+@click.option("--abort", "abort", is_flag=True,
+              help="Discard conflict markers and overwrite PATH from the remote. "
+                   "Refuses if PATH has no `.gd-conflict` divs.")
+@click.option("--dry-run", "dry_run", is_flag=True,
+              help="Compute the OpPlan but don't write anything. Exit 0.")
+@click.option("--plan-only", "plan_only", type=click.Path(path_type=Path), default=None,
+              help="Write the OpPlan as JSON to PATH; don't apply.")
+def push(path, doc, new_doc, title, force, continue_, abort, dry_run, plan_only):
+    """Push a local .md back to a Google Doc.
+
+    \b
+    Modes:
+      gdoc push PATH.md DOC                   fetch + 3-way merge + apply
+      gdoc push PATH.md DOC --force           overwrite remote (skip merge)
+      gdoc push PATH.md DOC --continue        resume after resolving markers
+      gdoc push PATH.md DOC --abort           discard markers, restore from remote
+      gdoc push PATH.md --new --title TITLE   create a new doc and push
+      gdoc push PATH.md DOC --dry-run         compute plan only
+      gdoc push PATH.md DOC --plan-only OUT   write plan JSON to OUT
+
+    The default path reads `<PATH>.pull-state.json` (written by
+    `gdoc pull`) as the merge base. On conflict it rewrites PATH with
+    `.gd-conflict` divs and exits non-zero so you can resolve and re-push
+    via `--continue` — or `--abort` to throw away your edits and restart
+    from the remote. Every successful push refreshes the sidecar so
+    subsequent merges have a fresh base.
+    """
+    from google_doc_diff.cli_push import (
+        NoConflictToAbortError,
+        UnresolvedConflictError,
+        format_plan_summary,
+        push_abort,
+        push_continue,
+        push_dry_run,
+        push_force,
+        push_merge,
+        push_new,
+        write_plan_json,
+    )
+
+    exclusive = [name for flag, name in (
+        (force, "--force"), (continue_, "--continue"), (abort, "--abort"),
+    ) if flag]
+    if len(exclusive) > 1:
+        raise click.ClickException(
+            f"{' and '.join(exclusive)} are mutually exclusive",
+        )
+
+    # Authentication.
+    try:
+        creds = load_credentials()
+    except AuthError as e:
+        click.echo(f"auth: {e}", err=True)
+        sys.exit(2)
+    api = GdocAPI(creds)
+
+    if plan_only:
+        doc_id = None
+        if doc:
+            doc_id, _ = resolve_doc_target(doc)
+        plan = push_dry_run(path, doc_id=doc_id, docs_service=api._docs if doc_id else None)
+        write_plan_json(plan, plan_only)
+        click.echo(f"wrote {plan_only}")
+        click.echo(format_plan_summary(plan))
+        return
+
+    if dry_run:
+        doc_id = None
+        if doc:
+            doc_id, _ = resolve_doc_target(doc)
+        plan = push_dry_run(path, doc_id=doc_id, docs_service=api._docs if doc_id else None)
+        click.echo(format_plan_summary(plan))
+        return
+
+    if new_doc:
+        if not title:
+            # Fall back to the frontmatter title
+            from google_doc_diff.parse.markdown import parse_frontmatter
+            fm, _ = parse_frontmatter(path.read_text())
+            title = fm.get("title") or path.stem
+        click.echo(f"creating new doc: {title!r}")
+        result = push_new(
+            path, title=title,
+            drive_service=api._drive_v3, docs_service=api._docs,
+        )
+        click.echo(f"new doc id: {result.doc_id}")
+        click.echo(format_plan_summary(result.plan))
+        click.echo("ok")
+        return
+
+    if not doc:
+        raise click.ClickException("either DOC or --new is required")
+    doc_id, _ = resolve_doc_target(doc)
+    if force:
+        click.echo(f"pushing to {doc_id} (force) …")
+        result = push_force(path, doc_id=doc_id, docs_service=api._docs)
+        click.echo(format_plan_summary(result.plan))
+        click.echo("ok")
+        return
+
+    if continue_:
+        click.echo(f"pushing to {doc_id} (continue) …")
+        try:
+            result = push_continue(path, doc_id=doc_id, docs_service=api._docs)
+        except UnresolvedConflictError as e:
+            click.echo(f"  {e}", err=True)
+            sys.exit(2)
+        click.echo(format_plan_summary(result.plan))
+        click.echo("ok")
+        return
+
+    if abort:
+        click.echo(f"aborting {doc_id} push …")
+        try:
+            document, docs_json = _pull_rich_document_with_raw(api, doc_id)
+        except Exception as e:
+            click.echo(f"api: {e}", err=True)
+            sys.exit(2)
+        try:
+            push_abort(path, document=document, docs_json=docs_json)
+        except NoConflictToAbortError as e:
+            click.echo(f"  {e}", err=True)
+            sys.exit(2)
+        click.echo(f"  restored {path} from remote; sidecar refreshed")
+        return
+
+    click.echo(f"pushing to {doc_id} (merge) …")
+    result = push_merge(path, doc_id=doc_id, docs_service=api._docs)
+    if result.conflicts:
+        click.echo(
+            f"  {len(result.conflicts)} conflict(s) — rewrote {path} with "
+            "conflict markers; resolve and re-run `gdoc push --continue`.",
+            err=True,
+        )
+        sys.exit(2)
+    click.echo(format_plan_summary(result.plan))
+    click.echo("ok")
 
 
 if __name__ == "__main__":

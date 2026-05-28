@@ -22,6 +22,8 @@ from google_doc_diff.ast.nodes import (
     SuggestionIns,
     Tab,
     Table,
+    Voter,
+    VotingChip,
 )
 from google_doc_diff.emit import emit_document_md
 
@@ -311,6 +313,25 @@ def test_smart_chip_person_default_visible_text():
     assert "[@alice@example.com]{.gd-chip" in md
     assert 'data-email="alice@example.com"' in md
     assert 'data-kind="person"' in md
+
+
+def test_voting_chip_emits_emoji_count_and_voters():
+    doc = make_doc(tabs=single_default_tab([
+        Paragraph(runs=[
+            VotingChip(
+                chip_id="kix.c1",
+                emoji="➕",
+                voters=[Voter(obfuscated_id="v1"), Voter(obfuscated_id="v2")],
+                current_user_voted=True,
+                signature="sig",
+            ),
+        ])
+    ]))
+    md = emit_document_md(doc)
+    assert "[➕ 2]{.gd-voting-chip" in md
+    assert 'data-emoji="➕"' in md
+    assert 'data-voters="v1,v2"' in md
+    assert 'data-current-user-voted="true"' in md
 
 
 # --- Images -------------------------------------------------------------

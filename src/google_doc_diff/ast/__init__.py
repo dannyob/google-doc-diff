@@ -7,6 +7,7 @@ from google_doc_diff.ast.nodes import (
     Comment,
     CommentAnchor,
     CommentReply,
+    Conflict,
     Document,
     EquationBlock,
     Footnote,
@@ -36,7 +37,7 @@ from google_doc_diff.ast.nodes import (
 
 __all__ = [
     "BookmarkAnchor", "Cell", "CodeBlock", "Comment", "CommentAnchor",
-    "CommentReply", "Document", "EquationBlock", "Footnote", "FootnoteRef",
+    "CommentReply", "Conflict", "Document", "EquationBlock", "Footnote", "FootnoteRef",
     "Heading", "HorizontalRule", "Image", "InlineEquation", "LineBreak",
     "ListItem", "NamedRangeAnchor", "PageBreak", "Paragraph", "Row", "Run",
     "SectionBreak", "SmartChip", "StyleDescriptor", "Suggestion",

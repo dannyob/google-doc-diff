@@ -43,6 +43,34 @@ class StyleDescriptor:
     background_color: str | None = None
     link_url: str | None = None
     link_anchor: str | None = None
+    # v2 round-trip extensions (OT ts_* coverage beyond the public Docs API)
+    vertical_alignment: str | None = None    # 'normal' | 'super' | 'sub'
+    small_caps: bool | None = None
+    weight: int | None = None                # 100..900, separate from `bold`
+    language: str | None = None              # BCP-47 tag
+
+
+@dataclass(frozen=True)
+class ParagraphProperties:
+    """Paragraph-level OT properties (the `ps_*` namespace in the editor model).
+
+    None on a field means 'inherit / not set' — matches StyleDescriptor.
+    Round-trip carriers in markdown: `--ot-*` custom properties inside the
+    inline `<style>` block, referenced from blocks via class names.
+    """
+
+    line_height: float | None = None
+    space_before_pt: float | None = None
+    space_after_pt: float | None = None
+    indent_left_pt: float | None = None
+    indent_right_pt: float | None = None
+    indent_first_line_pt: float | None = None
+    alignment: str | None = None             # 'left' | 'right' | 'center' | 'justify'
+    heading_depth: int | None = None         # 1..6, or None for body text
+    keep_with_next: bool | None = None
+    keep_lines_together: bool | None = None
+    page_break_before: bool | None = None
+    direction: str | None = None             # 'ltr' | 'rtl'
 
 
 @dataclass
@@ -115,6 +143,29 @@ class SmartChip:
     display_text: str = ""
 
 
+@dataclass(frozen=True)
+class Voter:
+    """One voter on a VotingChip, identified by their Google obfuscated id."""
+
+    obfuscated_id: str
+
+
+@dataclass
+class VotingChip:
+    """A doc-tag voting chip with full per-voter state.
+
+    Captured at pull time from the OT stream (the public Docs API hides this
+    as a U+E907 placeholder). Round-trip target: `voting-chip-populate` ops
+    via the `/save` channel.
+    """
+
+    chip_id: str
+    emoji: str
+    voters: list[Voter] = field(default_factory=list)
+    current_user_voted: bool = False
+    signature: str = ""
+
+
 @dataclass
 class InlineEquation:
     latex: str
@@ -144,12 +195,16 @@ class Heading:
     runs: list[Run] = field(default_factory=list)
     anchor_id: str | None = None
     classes: list[str] = field(default_factory=list)
+    paragraph_id: str | None = None      # v2: stable id for diff/round-trip
+    paragraph_properties: ParagraphProperties | None = None
 
 
 @dataclass
 class Paragraph:
     runs: list[Run] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
+    paragraph_id: str | None = None      # v2: stable id for diff/round-trip
+    paragraph_properties: ParagraphProperties | None = None
 
 
 @dataclass
@@ -159,6 +214,7 @@ class ListItem:
     list_id: str
     runs: list[Run] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
+    paragraph_id: str | None = None      # v2: stable id for diff/round-trip
 
 
 @dataclass
@@ -220,6 +276,22 @@ class TableOfContents:
     pass
 
 
+@dataclass
+class Conflict:
+    """A three-way-merge conflict the user must resolve in markdown.
+
+    Both sides edited the same region but with different content. The
+    block carries the local and remote blocks side-by-side; emit
+    renders it as a `.gd-conflict` pandoc div so the user can edit it
+    down to whichever side they want (or a manual merge), then re-run
+    `gdoc push --continue`.
+    """
+    conflict_id: str
+    local_blocks: list = field(default_factory=list)
+    remote_blocks: list = field(default_factory=list)
+    base_blocks: list = field(default_factory=list)
+
+
 # --- Cross-cutting collections ---------------------------------------------
 
 
@@ -246,6 +318,7 @@ class Comment:
     deleted: bool = False
     replies: list[CommentReply] = field(default_factory=list)
     orphaned: bool = False
+    anchor: str = ""                     # opaque 'kix.<id>' from Drive API
 
 
 @dataclass
@@ -255,6 +328,7 @@ class Suggestion:
     created_time: datetime
     kind: str                            # 'insertion' | 'deletion' | 'replacement'
     attached_comment_id: str | None = None
+    color: str | None = None             # '#RRGGBB' from kix enrichment
 
 
 @dataclass
@@ -299,3 +373,7 @@ class Document:
     list_definitions: dict[str, dict] = field(default_factory=dict)
     inline_objects: dict[str, dict] = field(default_factory=dict)
     css_classes: dict[str, str] = field(default_factory=dict)
+    # v2 round-trip state: opaque bag emitted under the frontmatter `gdoc:`
+    # key. Holds base_revision, model_version, per-chip signatures, raw
+    # `Unsupported` payloads, etc. Empty by default for backwards-compat.
+    gdoc_state: dict = field(default_factory=dict)

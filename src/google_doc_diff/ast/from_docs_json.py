@@ -59,6 +59,7 @@ def build_document(
     drive_url: str | None = None,
     captured_at: datetime | None = None,
     last_modifying_user: str | None = None,
+    kix_resolver=None,
 ) -> Document:
     """Build a Document AST from a Docs API response and optional Comments list."""
     doc_id = docs_json.get("documentId", "")
@@ -72,6 +73,7 @@ def build_document(
 
     builder = _DocBuilder(docs_json)
     tabs = builder.build_tabs()
+    _stamp_paragraph_ids(tabs)
 
     document = Document(
         doc_id=doc_id,
@@ -93,10 +95,61 @@ def build_document(
         inline_objects=builder.inline_objects,
         css_classes=builder.css_classes,
     )
-    return anchor_comments(document)
+    return anchor_comments(document, kix_resolver=kix_resolver)
 
 
 # --- Comments (Drive Comments API) ---------------------------------------
+
+
+def _stamp_paragraph_ids(tabs: list) -> None:
+    """Assign a deterministic paragraph_id to every Paragraph/Heading.
+
+    Format: ``p-{tab_idx}-{block_idx}`` — stable across re-pulls of the
+    same docs_json so a fresh pull and a previously-pulled-and-edited
+    local markdown share the same ids for unchanged paragraphs. This is
+    the join key the diff layer uses to recognise "same block, different
+    content" vs "deleted + reinserted".
+
+    Headings already carry an `anchor_id` from Google's `headingId`; the
+    paragraph_id is a separate diff key (the diff layer reads
+    paragraph_id first, then falls back to anchor_id for headings).
+    """
+    def _walk(tab_list: list, prefix: str) -> None:
+        for ti, tab in enumerate(tab_list):
+            base = f"{prefix}{ti}" if prefix else str(ti)
+            for bi, block in enumerate(tab.blocks):
+                if not isinstance(block, (Paragraph, Heading, ListItem)):
+                    continue
+                if block.paragraph_id is not None:
+                    continue
+                # Skip visually-empty blocks. Docs always ends the body with
+                # a trailing empty paragraph; stamping it would round-trip
+                # back as an empty `::: {#p-…}` fence, then later diff as
+                # a phantom DeleteBlock when the local md drops it.
+                if _block_is_empty(block.runs):
+                    continue
+                block.paragraph_id = f"p-{base}-{bi}"
+            if tab.children:
+                _walk(tab.children, f"{base}.")
+    _walk(tabs, "")
+
+
+def _block_is_empty(runs) -> bool:
+    """True iff a block carries no visible text content.
+
+    Runs can be Run / SmartChip / Suggestion* / etc. A SmartChip, image,
+    or suggestion is "visible" regardless of any `.text` attribute, so we
+    only treat a block as empty when EVERY run is a Run with whitespace
+    text. (Anything non-Run counts as content.)
+    """
+    if not runs:
+        return True
+    for r in runs:
+        if not isinstance(r, Run):
+            return False
+        if r.text and r.text.strip():
+            return False
+    return True
 
 
 def _build_comments(comments: list[dict]) -> dict[str, Comment]:
@@ -124,6 +177,7 @@ def _build_comments(comments: list[dict]) -> dict[str, Comment]:
             resolved=bool(c.get("resolved")),
             deleted=bool(c.get("deleted")),
             replies=replies,
+            anchor=c.get("anchor", ""),
         )
     return out
 

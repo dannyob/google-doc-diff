@@ -58,6 +58,102 @@ def test_build_simple_doc_with_heading_and_paragraph():
     assert blocks[1].runs[0].text == "World"
 
 
+def test_paragraph_ids_stamped_on_pull():
+    """Pull-time AST must give each Paragraph/Heading a stable paragraph_id.
+
+    Without this, diff against an edited local md can't match blocks back
+    to their remote counterparts, so `push --force` falls back to "delete
+    everything and re-insert" — broken round-trip semantics.
+    """
+    doc = build_document(_docs_json_minimal())
+    blocks = doc.tabs[0].blocks
+    h, p = blocks[0], blocks[1]
+    assert h.paragraph_id is not None
+    assert p.paragraph_id is not None
+    assert h.paragraph_id != p.paragraph_id
+    # Format is deterministic across pulls of the same revision so re-pulls
+    # produce the same ids for the same paragraphs in the same positions.
+    assert h.paragraph_id.startswith("p-")
+    # Idempotence: building the same docs_json twice yields the same ids.
+    doc2 = build_document(_docs_json_minimal())
+    ids2 = [b.paragraph_id for b in doc2.tabs[0].blocks]
+    assert [b.paragraph_id for b in blocks] == ids2
+
+
+def test_paragraph_ids_not_stamped_on_empty_paragraphs():
+    """Docs' trailing empty paragraph must not get an id.
+
+    Otherwise a fresh pull rounds-trips with `::: {#p-…}` empty fences
+    that the markdown parser drops, and the next push-diff sees a
+    phantom DeleteBlock for the empty paragraph that didn't survive
+    parsing.
+    """
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "body": {"content": [
+            {"paragraph": {"elements": [{"textRun": {"content": "real content\n"}}]}},
+            {"paragraph": {"elements": [{"textRun": {"content": "\n"}}]}},  # trailing blank
+        ]},
+    }
+    doc = build_document(j)
+    blocks = doc.tabs[0].blocks
+    assert blocks[0].paragraph_id is not None  # real paragraph keeps id
+    assert blocks[1].paragraph_id is None       # empty paragraph stays anonymous
+
+
+def test_paragraph_ids_stamped_on_list_items():
+    """ListItems get the same `p-{tab_idx}-{block_idx}` id as Paragraph/Heading.
+
+    Without this, list-item edits diff as wholesale block re-inserts
+    (because _block_id returns None for ListItems with no id), so even a
+    one-character text edit deletes + re-inserts every list item.
+    """
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "lists": {"L1": {"listProperties": {"nestingLevels": [
+            {"glyphType": "BULLET"},
+        ]}}},
+        "body": {"content": [
+            {"paragraph": {
+                "bullet": {"listId": "L1"},
+                "elements": [{"textRun": {"content": "first item\n"}}],
+            }},
+            {"paragraph": {
+                "bullet": {"listId": "L1"},
+                "elements": [{"textRun": {"content": "second item\n"}}],
+            }},
+        ]},
+    }
+    doc = build_document(j)
+    blocks = doc.tabs[0].blocks
+    assert all(b.paragraph_id is not None for b in blocks), (
+        [type(b).__name__ for b in blocks],
+        [getattr(b, "paragraph_id", "missing") for b in blocks],
+    )
+    assert blocks[0].paragraph_id != blocks[1].paragraph_id
+
+
+def test_paragraph_ids_unique_across_tabs():
+    """Tab-prefixed ids stay unique when a doc has multiple tabs."""
+    j = {
+        "documentId": "X", "title": "T", "revisionId": "r",
+        "tabs": [
+            {"tabProperties": {"tabId": "A", "title": "A"},
+             "documentTab": {"body": {"content": [
+                 {"paragraph": {"elements": [{"textRun": {"content": "first\n"}}]}},
+             ]}}},
+            {"tabProperties": {"tabId": "B", "title": "B"},
+             "documentTab": {"body": {"content": [
+                 {"paragraph": {"elements": [{"textRun": {"content": "second\n"}}]}},
+             ]}}},
+        ],
+    }
+    doc = build_document(j)
+    p_a = doc.tabs[0].blocks[0].paragraph_id
+    p_b = doc.tabs[1].blocks[0].paragraph_id
+    assert p_a and p_b and p_a != p_b
+
+
 def test_named_styles_extracted_to_doc():
     doc = build_document(_docs_json_minimal())
     assert "HEADING_1" in doc.named_styles

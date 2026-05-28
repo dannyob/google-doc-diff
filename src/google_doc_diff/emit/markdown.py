@@ -21,6 +21,7 @@ from google_doc_diff.ast.nodes import (
     CodeBlock,
     Comment,
     CommentAnchor,
+    Conflict,
     Document,
     EquationBlock,
     Footnote,
@@ -44,6 +45,7 @@ from google_doc_diff.ast.nodes import (
     Table,
     TableOfContents,
     Unsupported,
+    VotingChip,
 )
 from google_doc_diff.styles.classes import synthesize_inline_class
 from google_doc_diff.styles.css import build_css
@@ -91,6 +93,8 @@ def _emit_frontmatter(doc: Document) -> str:
         "comments_preserved": doc.comments_preserved,
         "suggestions_preserved": doc.suggestions_preserved,
     }
+    if doc.gdoc_state:
+        fm["gdoc"] = doc.gdoc_state
     body = yaml.safe_dump(fm, sort_keys=True, default_flow_style=False, allow_unicode=True)
     return f"---\n{body}---\n"
 
@@ -180,14 +184,54 @@ def _emit_block(block, doc: Document, fn_ids: set) -> str:
         return '<div class="gd-toc"></div>'
     if isinstance(block, Unsupported):
         return _emit_unsupported(block, inline=False)
+    if isinstance(block, Conflict):
+        return _emit_conflict(block, doc, fn_ids)
     raise TypeError(f"unhandled block kind: {type(block).__name__}")
+
+
+CONFLICT_LOCAL_MARKER = "<<<<<<< LOCAL"
+CONFLICT_SEPARATOR = "======="
+CONFLICT_REMOTE_MARKER = ">>>>>>> REMOTE"
+
+
+def _emit_conflict(c: Conflict, doc: Document, fn_ids: set) -> str:
+    """Render a 3-way-merge conflict as a `.gd-conflict` div with git-style markers.
+
+    Shape:
+
+        ::: {.gd-conflict #c-1}
+        <<<<<<< LOCAL
+        … local blocks …
+        =======
+        … remote blocks …
+        >>>>>>> REMOTE
+        :::
+
+    Git-style markers are familiar to anyone who's resolved a merge
+    conflict, and they don't nest pandoc fences inside pandoc fences —
+    keeping the parser straightforward.
+    """
+    local_md = "\n\n".join(_emit_block(b, doc, fn_ids) for b in c.local_blocks)
+    remote_md = "\n\n".join(_emit_block(b, doc, fn_ids) for b in c.remote_blocks)
+    return "\n".join([
+        f"::: {{.gd-conflict #{c.conflict_id}}}",
+        CONFLICT_LOCAL_MARKER,
+        local_md,
+        CONFLICT_SEPARATOR,
+        remote_md,
+        CONFLICT_REMOTE_MARKER,
+        ":::",
+    ])
 
 
 def _emit_heading(h: Heading, doc: Document, fn_ids: set) -> str:
     text = _emit_inline_runs(h.runs, doc, fn_ids)
     hashes = "#" * h.level
     classes = list(h.classes)
-    attr_str = _format_attr_block(h.anchor_id, classes)
+    # v2: paragraph_id rides alongside anchor_id. anchor_id wins on the
+    # heading-anchor channel; paragraph_id is added as a second `#…` token.
+    extra_ids = [h.paragraph_id] if h.paragraph_id else []
+    attr_str = _format_attr_block(h.anchor_id, classes, extra_ids=extra_ids)
     if attr_str:
         return f"{hashes} {text} {attr_str}"
     return f"{hashes} {text}"
@@ -195,13 +239,14 @@ def _emit_heading(h: Heading, doc: Document, fn_ids: set) -> str:
 
 def _emit_paragraph(p: Paragraph, doc: Document, fn_ids: set) -> str:
     text = _emit_inline_runs(p.runs, doc, fn_ids)
-    if not text.strip() and not p.classes:
+    if not text.strip() and not p.classes and not p.paragraph_id:
         return ""
-    if "gd-subtitle" in p.classes:
+    if "gd-subtitle" in p.classes and not p.paragraph_id:
         return f"::: gd-subtitle\n{text}\n:::"
-    if not p.classes:
+    if not p.classes and not p.paragraph_id:
         return text
-    attr_str = _format_attr_block(None, list(p.classes))
+    extra_ids = [p.paragraph_id] if p.paragraph_id else []
+    attr_str = _format_attr_block(None, list(p.classes), extra_ids=extra_ids)
     return f"::: {{{attr_str.strip('{}')}}}\n{text}\n:::" if attr_str else text
 
 
@@ -231,10 +276,10 @@ def _emit_list(items: list[ListItem], doc: Document, fn_ids: set) -> str:
     kind = items[0].kind
     for item in items:
         marker = "1." if item.kind == "ordered" else "-"
-        # Pandoc indent: 3 spaces per nesting level for ordered, 2 for bulleted
         indent = "    " * item.level if kind == "ordered" else "  " * item.level
+        id_prefix = f"[]{{#{item.paragraph_id}}}" if item.paragraph_id else ""
         text = _emit_inline_runs(item.runs, doc, fn_ids)
-        out_lines.append(f"{indent}{marker} {text}")
+        out_lines.append(f"{indent}{marker} {id_prefix}{text}")
     return "\n".join(out_lines)
 
 
@@ -371,6 +416,8 @@ def _emit_inline(node, doc: Document, fn_ids: set) -> str:
         return f"[]{{#{node.bookmark_id}}}"
     if isinstance(node, NamedRangeAnchor):
         return f"[]{{#{node.named_range_id}}}"
+    if isinstance(node, VotingChip):
+        return _emit_voting_chip(node)
     if isinstance(node, SmartChip):
         return _emit_smart_chip(node)
     if isinstance(node, InlineEquation):
@@ -411,9 +458,14 @@ def _emit_run(r: Run) -> str:
             text = f"*{text}*"
         if fmt.strikethrough:
             text = f"~~{text}~~"
-    cls = synthesize_inline_class(fmt)
-    if cls:
-        return f"[{text}]{{.{cls}}}"
+    # Don't wrap links in a class span — the [text](url) syntax can't nest
+    # inside [...]{.class} without breaking markdown parsers. Link-default
+    # styling (blue + underline) is inherent to the link and doesn't need a
+    # separate class.
+    if not fmt.link_url:
+        cls = synthesize_inline_class(fmt)
+        if cls:
+            return f"[{text}]{{.{cls}}}"
     return text
 
 
@@ -477,6 +529,21 @@ def _smart_chip_default_text(c: SmartChip) -> str:
     if c.kind == "person":
         return f"@{c.data.get('email', '?')}"
     return c.kind
+
+
+def _emit_voting_chip(c: VotingChip) -> str:
+    visible = f"{c.emoji} {len(c.voters)}".strip()
+    voters = ",".join(v.obfuscated_id for v in c.voters)
+    attrs = [
+        ".gd-voting-chip",
+        f'data-chip-id="{_attr_escape(c.chip_id)}"',
+        f'data-emoji="{_attr_escape(c.emoji)}"',
+        f'data-voters="{_attr_escape(voters)}"',
+        f'data-current-user-voted="{str(c.current_user_voted).lower()}"',
+    ]
+    if c.signature:
+        attrs.append(f'data-signature="{_attr_escape(c.signature)}"')
+    return f"[{visible}]{{{' '.join(attrs)}}}"
 
 
 def _emit_unsupported(u: Unsupported, *, inline: bool) -> str:
@@ -555,12 +622,26 @@ def _format_footnote_definition(fn: Footnote, doc: Document) -> str:
 # --- attribute / text helpers ---------------------------------------------
 
 
-def _format_attr_block(anchor_id: str | None, classes: list[str]) -> str:
+def _format_attr_block(
+    anchor_id: str | None,
+    classes: list[str],
+    extra_ids: list[str] | None = None,
+) -> str:
+    """Render `{#id1 .class1 .class2 #id2}` style pandoc attribute block.
+
+    `anchor_id` is the *primary* identifier (heading anchor or block anchor —
+    becomes the first `#…` token, which pandoc parses as the canonical id).
+    `extra_ids` (e.g. v2's `paragraph_id`) appears after the classes so the
+    primary id keeps its position-of-honor.
+    """
     parts: list[str] = []
     if anchor_id:
         parts.append(f"#{anchor_id}")
     for cls in sorted(classes):
         parts.append(f".{cls}")
+    for extra in extra_ids or ():
+        if extra:
+            parts.append(f"#{extra}")
     if not parts:
         return ""
     return "{" + " ".join(parts) + "}"
