@@ -18,7 +18,7 @@ later work extends past it.
 | `gdoc push --abort` | Discards markers, restores from remote. |
 | Complex docs (925 comments, 63 images, 1400+ blocks) | Normalization prevents phantom diffs. |
 
-423 tests, ruff clean.
+425 tests, ruff clean.
 
 ## What landed (by chunk)
 
@@ -32,7 +32,7 @@ later work extends past it.
 | 6 | `cli_push.py`, `cli.py` | `push --new`, `--force`, `--continue`, `--abort`, `--dry-run`, `--plan-only`; `.pull-state.json` sidecar with `base_md`; sidecar refresh after every apply |
 | 7 | `merge/three_way.py` | Block-level 3-way merge with full conflict matrix; ordered pairing for comment anchors |
 | 8 | `ast/anchor_comments.py` | Ordered pairing for ambiguous snippets + `kix_resolver` hook for exact positioning via Chrome cookies |
-| 9 | `kix/{auth,model,enrich}.py` | Optional kix enrichment layer: Chrome cookie auth, OT model extraction, suggestion colors, comment anchor resolution, voting chip enrichment |
+| 9 | `kix/{auth,model,enrich}.py` | Optional kix enrichment layer: Chrome cookie auth; OT model extraction (multi-chunk, ksm-unwrap, per-tab); voting-chip enrichment (emoji + voter ids); suggestion colors. Live-verified on a 4-tab doc: 5/5 voting chips enriched. |
 
 ## Known issues / follow-ups
 
@@ -59,6 +59,22 @@ other formatting on newly inserted text is lost.
 
 **Fix**: when `_emit_text_ops` produces an `InsertText`, look up the
 target AST's runs at that offset and attach `run_style`.
+
+### Kix comment-anchor precision needs OT index reconstruction
+
+The OT stream carries exact comment anchor ranges (`as` ops with
+`st == "doco_anchor"`, plus `si`/`ei`), and we extract them correctly. But
+mapping `si` to an AST block needs a faithful reconstruction of Kix's index
+space, which counts table-cell / nested-list / footnote / suggestion content
+that the public AST sizes differently (≈90k vs ≈64k chars on the Filecoin
+weekly doc). So `si`→block drifts and only a handful land in the right block.
+
+Kix enrichment therefore ships voting chips + suggestion colors only; comment
+anchoring stays on the text-matching path (`anchor_comments` without a
+resolver). Closing the gap means replaying the `is`/`ae`/`te`/table op stream
+to build an exact index→position map — effectively a small Kix layout engine.
+The `kix_resolver` hook in `anchor_comments` is the wiring point once that map
+exists.
 
 ### `/save` channel backend (future: suggestion authoring)
 
@@ -115,9 +131,10 @@ src/google_doc_diff/
   kix/
     __init__.py              <- public API re-exports
     auth.py                  <- KixSession, cookie resolution, /edit fetch
-    model.py                 <- KixModel, extract DOCS_modelChunk from HTML
-    enrich.py                <- enrich_from_kix decorator; suggestion colors,
-                                comment anchors, voting chips
+    model.py                 <- KixModel.ops_by_tab; unwrap all DOCS_modelChunk
+                                ksm wrappers into per-tab inner op streams
+    enrich.py                <- enrich_from_kix decorator; voting chips
+                                (emoji + voter ids), suggestion colors
   cli.py                   <- pull writes .pull-state.json sidecar;
                               push default = merge with --continue/--abort;
                               --kix-cookies/--kix-profile/--no-kix on pull
@@ -136,10 +153,10 @@ tests/
     test_merge_three_way.py    <- 44 edge-case merge tests
     test_from_docs_json.py     <- paragraph_id stamping
   kix/
-    test_model.py              <- OT op extraction from HTML fixtures
+    test_model.py              <- multi-chunk/ksm-unwrap, per-tab grouping
     test_auth.py               <- cookie source resolution (mocked fs)
-    test_enrich.py             <- suggestion colors, anchors, voting chips
-    test_cli_kix.py            <- CLI flag parsing + enrichment integration
+    test_enrich.py             <- suggestion colors, voting chips
+    test_cli_kix.py            <- flag parsing, skip diagnostics, integration
   round_trip/
     test_emit_parse_round_trip.py
     test_full_pipeline_mock.py

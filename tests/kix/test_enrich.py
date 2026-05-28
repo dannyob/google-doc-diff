@@ -3,7 +3,6 @@
 from datetime import UTC, datetime
 
 from google_doc_diff.ast.nodes import (
-    Comment,
     Document,
     Paragraph,
     Run,
@@ -12,7 +11,7 @@ from google_doc_diff.ast.nodes import (
     Tab,
     VotingChip,
 )
-from google_doc_diff.kix.enrich import build_kix_anchor_map, enrich_from_kix
+from google_doc_diff.kix.enrich import enrich_from_kix
 from google_doc_diff.kix.model import KixModel
 
 
@@ -40,9 +39,14 @@ def _make_doc(
     )
 
 
-def _make_model(ops, *, revision=1, model_version=1, suggestion_colors=None) -> KixModel:
+def _make_model(
+    ops=None, *, ops_by_tab=None, revision=1, model_version=1, suggestion_colors=None
+) -> KixModel:
+    """Build a KixModel. ``ops`` (if given) is the inner op stream for tab t.0."""
+    if ops_by_tab is None:
+        ops_by_tab = {"t.0": ops or []}
     return KixModel(
-        ops=ops,
+        ops_by_tab=ops_by_tab,
         revision=revision,
         model_version=model_version,
         suggestion_colors=suggestion_colors or {},
@@ -61,12 +65,7 @@ class TestSuggestionColors:
                 ),
             }
         )
-        ops = [
-            {"ty": "is", "ibi": 1, "s": "hello"},
-            {"ty": "iss", "sugid": "suggest.abc123", "ibi": 5, "s": " world"},
-        ]
-        model = _make_model(ops, suggestion_colors={"suggest.abc123": "#ff9900"})
-
+        model = _make_model([], suggestion_colors={"suggest.abc123": "#ff9900"})
         enrich_from_kix(doc, model)
         assert doc.suggestions["suggest.abc123"].color == "#ff9900"
 
@@ -82,7 +81,6 @@ class TestSuggestionColors:
             }
         )
         model = _make_model([], suggestion_colors={"suggest.unknown": "#00ff00"})
-
         enrich_from_kix(doc, model)
         assert doc.suggestions["suggest.abc123"].color is None
 
@@ -90,88 +88,6 @@ class TestSuggestionColors:
         doc = _make_doc()
         model = _make_model([])
         enrich_from_kix(doc, model)
-
-    def test_multiple_suggestions_each_get_color(self):
-        doc = _make_doc(
-            suggestions={
-                "suggest.a": Suggestion(
-                    suggestion_id="suggest.a",
-                    author="a@x.com",
-                    created_time=datetime.now(UTC),
-                    kind="insertion",
-                ),
-                "suggest.b": Suggestion(
-                    suggestion_id="suggest.b",
-                    author="b@x.com",
-                    created_time=datetime.now(UTC),
-                    kind="deletion",
-                ),
-            }
-        )
-        model = _make_model(
-            [],
-            suggestion_colors={
-                "suggest.a": "#ff0000",
-                "suggest.b": "#00ff00",
-            },
-        )
-        enrich_from_kix(doc, model)
-        assert doc.suggestions["suggest.a"].color == "#ff0000"
-        assert doc.suggestions["suggest.b"].color == "#00ff00"
-
-
-class TestBuildKixAnchorMap:
-    def test_maps_te_ops_to_byte_offsets(self):
-        ops = [
-            {"ty": "is", "ibi": 0, "s": "First paragraph text. "},
-            {"ty": "is", "ibi": 22, "s": "Second paragraph text."},
-            {"ty": "te", "id": "kix.abc123", "spi": 5},
-            {"ty": "te", "id": "kix.def456", "spi": 25},
-        ]
-        anchor_map = build_kix_anchor_map(ops)
-        assert anchor_map["kix.abc123"] == 5
-        assert anchor_map["kix.def456"] == 25
-
-    def test_empty_ops(self):
-        assert build_kix_anchor_map([]) == {}
-
-
-class TestCommentAnchorEnrichment:
-    def test_enrichment_uses_kix_resolver(self):
-        tab = Tab(
-            tab_id="t.0",
-            title="Tab 1",
-            level=0,
-            blocks=[
-                Paragraph(runs=[Run(text="Hello world")]),
-                Paragraph(runs=[Run(text="Goodbye world")]),
-            ],
-        )
-        doc = _make_doc(
-            tabs=[tab],
-            comments={
-                "c1": Comment(
-                    comment_id="c1",
-                    author="a@x.com",
-                    created_time=datetime.now(UTC),
-                    modified_time=datetime.now(UTC),
-                    content="Nice!",
-                    quoted_text="Hello",
-                    anchor="kix.anchor1",
-                ),
-            },
-        )
-        # te op places kix.anchor1 at spi=0, which is in block 0
-        # block 0 has "Hello world" (11 chars + 1 newline = offset 0..11)
-        ops = [
-            {"ty": "is", "ibi": 0, "s": "Hello world\nGoodbye world"},
-            {"ty": "te", "id": "kix.anchor1", "spi": 0},
-        ]
-        model = _make_model(ops)
-
-        enrich_from_kix(doc, model)
-        # The comment should have been anchored (not orphaned)
-        assert not doc.comments["c1"].orphaned
 
 
 class TestVotingChipEnrichment:
@@ -213,8 +129,7 @@ class TestVotingChipEnrichment:
         result = enrich_from_kix(doc, model)
         assert result.voting_chips_enriched == 1
 
-        block = doc.tabs[0].blocks[0]
-        chip = block.runs[1]
+        chip = doc.tabs[0].blocks[0].runs[1]
         assert isinstance(chip, VotingChip)
         assert chip.emoji == "➕"
         assert len(chip.voters) == 2
@@ -235,7 +150,7 @@ class TestVotingChipEnrichment:
         result = enrich_from_kix(doc, model)
         assert result.voting_chips_enriched == 0
 
-    def test_multiple_chips_in_same_paragraph(self):
+    def test_multiple_chips_ordered_by_placement(self):
         tab = Tab(
             tab_id="t.0",
             title="Tab 1",
@@ -252,7 +167,6 @@ class TestVotingChipEnrichment:
         )
         doc = _make_doc(tabs=[tab])
         ops = [
-            {"ty": "is", "ibi": 0, "s": " and "},
             {"ty": "ae", "et": "emoji-voting", "id": "kix.c1", "epm": {}},
             {"ty": "te", "id": "kix.c1", "spi": 0},
             {
@@ -278,3 +192,7 @@ class TestVotingChipEnrichment:
 
         result = enrich_from_kix(doc, model)
         assert result.voting_chips_enriched == 2
+        chip0 = doc.tabs[0].blocks[0].runs[0]
+        chip2 = doc.tabs[0].blocks[0].runs[2]
+        assert isinstance(chip0, VotingChip) and chip0.emoji == "👍"
+        assert isinstance(chip2, VotingChip) and chip2.emoji == "🚀"

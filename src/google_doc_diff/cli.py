@@ -712,8 +712,6 @@ def _try_kix_enrichment(doc, doc_id, *, kix_cookies=None, kix_profile=None, verb
         parts = []
         if result.suggestion_colors_applied:
             parts.append(f"suggestion colors: {result.suggestion_colors_applied}")
-        if result.comment_anchors_resolved:
-            parts.append(f"comment anchors: {result.comment_anchors_resolved}")
         if result.voting_chips_enriched:
             parts.append(f"voting chips: {result.voting_chips_enriched}")
         summary = ", ".join(parts) if parts else "no enrichments applied"

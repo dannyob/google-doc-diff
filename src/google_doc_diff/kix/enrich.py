@@ -1,17 +1,30 @@
-"""Post-processing enrichment: decorate an existing AST with kix OT details."""
+"""Post-processing enrichment: decorate an existing AST with kix OT details.
+
+The OT op stream (see ``kix.model``) is grouped by tab id. For each tab we feed
+its unwrapped inner ops to the matchers here:
+
+* **voting chips** — ``ae`` ops with ``et == "emoji-voting"`` plus nested
+  ``dtvc`` ``voting-chip-populate`` ops carry the emoji and voter ids the
+  public Docs API omits.
+* **suggestion colors** — taken from the chunk's ``suggestionColors`` map.
+
+Precise *comment-anchor* placement also lives in the stream (``as`` ops with
+``st == "doco_anchor"``, carrying ``si``/``ei`` ranges) but resolving those
+``si`` offsets to AST blocks needs a faithful reconstruction of Kix's index
+space (table/list/footnote/suggestion content the public AST doesn't size the
+same way). That's deferred — comment anchoring stays on the text-matching path.
+"""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 
-from google_doc_diff.ast.anchor_comments import anchor_comments
 from google_doc_diff.ast.nodes import (
     Document,
     Heading,
     ListItem,
     Paragraph,
-    Run,
     SmartChip,
     Voter,
     VotingChip,
@@ -20,13 +33,26 @@ from google_doc_diff.kix.model import KixModel
 
 logger = logging.getLogger(__name__)
 
+_BLOCK_TYPES = (Paragraph, Heading, ListItem)
+
+
+def _model_ops_for_tab(model: KixModel, tab) -> list[dict] | None:
+    """Look up a tab's ops, reconciling the AST's ``t-`` tab-id prefix.
+
+    The model is keyed by Google's raw tab id (``t.xxxx``); the AST stores it
+    as ``t-`` + that id (see ``from_docs_json``).
+    """
+    ops = model.ops_by_tab.get(tab.tab_id)
+    if ops is None:
+        ops = model.ops_by_tab.get(tab.tab_id.removeprefix("t-"))
+    return ops
+
 
 @dataclass
 class EnrichResult:
     """Summary of what the enrichment pass did."""
 
     suggestion_colors_applied: int = 0
-    comment_anchors_resolved: int = 0
     voting_chips_enriched: int = 0
 
 
@@ -34,65 +60,20 @@ def enrich_from_kix(doc: Document, model: KixModel) -> EnrichResult:
     """Mutate doc in place with details from the OT stream."""
     result = EnrichResult()
     result.suggestion_colors_applied = _enrich_suggestion_colors(doc, model)
-    result.comment_anchors_resolved = _enrich_comment_anchors(doc, model)
     result.voting_chips_enriched = _enrich_voting_chips(doc, model)
     return result
 
 
-def build_kix_anchor_map(ops: list[dict]) -> dict[str, int]:
-    """Build a mapping from kix anchor IDs to their byte offsets (spi) from OT ops."""
-    out: dict[str, int] = {}
-    for op in ops:
-        if op.get("ty") == "te" and "id" in op and "spi" in op:
-            out[op["id"]] = op["spi"]
-    return out
-
-
-def _spi_to_block_index(doc: Document, spi: int | None) -> int | None:
-    """Convert a byte offset (spi) to a block index in the first tab."""
-    if spi is None or not doc.tabs:
-        return None
-    offset = 0
-    for i, block in enumerate(doc.tabs[0].blocks):
-        if not isinstance(block, (Paragraph, Heading, ListItem)):
-            continue
-        block_len = sum(len(r.text) for r in block.runs if isinstance(r, Run))
-        block_len += 1  # newline separator
-        if offset <= spi < offset + block_len:
-            return i
-        offset += block_len
-    return None
-
-
-def _enrich_comment_anchors(doc: Document, model: KixModel) -> int:
-    """Re-run comment anchoring using kix-derived exact positions."""
-    anchor_map = build_kix_anchor_map(model.ops)
-    if not anchor_map:
-        return 0
-
-    active_comments = [
-        c for c in doc.comments.values() if not c.deleted and c.quoted_text and c.anchor
-    ]
-    if not active_comments:
-        return 0
-
-    def resolver(kix_anchor: str) -> int | None:
-        return _spi_to_block_index(doc, anchor_map.get(kix_anchor))
-
-    anchor_comments(doc, kix_resolver=resolver)
-    resolved = sum(1 for c in active_comments if not c.orphaned)
-    return resolved
+# --- voting chips ----------------------------------------------------------
 
 
 def _parse_voting_chips(ops: list[dict]) -> dict[str, dict]:
-    """Scan OT ops for emoji-voting ae+nm pairs; return dict keyed by chip_id."""
-    # Collect ae ops with et=="emoji-voting"
+    """Scan a tab's ops for emoji-voting ae + dtvc populate pairs."""
     voting_ids: set[str] = set()
     for op in ops:
         if op.get("ty") == "ae" and op.get("et") == "emoji-voting" and "id" in op:
             voting_ids.add(op["id"])
 
-    # Collect nm ops that populate voting chips
     chips: dict[str, dict] = {}
     for op in ops:
         if op.get("ty") != "nm":
@@ -126,44 +107,51 @@ def _parse_voting_chips(ops: list[dict]) -> dict[str, dict]:
 
 
 def _enrich_voting_chips(doc: Document, model: KixModel) -> int:
-    """Replace SmartChip nodes with VotingChip nodes using OT op data."""
-    chips = _parse_voting_chips(model.ops)
+    """Replace SmartChip nodes with VotingChip nodes, per tab."""
+    count = 0
+    for tab in doc.tabs:
+        ops = _model_ops_for_tab(model, tab)
+        if ops:
+            count += _enrich_voting_chips_in_tab(tab, ops)
+    return count
+
+
+def _enrich_voting_chips_in_tab(tab, ops: list[dict]) -> int:
+    chips = _parse_voting_chips(ops)
     if not chips:
         return 0
 
-    # Walk chips in document order (by spi from te ops)
-    te_order: list[tuple[int, str]] = []
-    for op in model.ops:
-        if op.get("ty") == "te" and op.get("id") in chips:
-            te_order.append((op["spi"], op["id"]))
-    te_order.sort(key=lambda x: x[0])
+    te_order = sorted(
+        (op["spi"], op["id"])
+        for op in ops
+        if op.get("ty") == "te" and op.get("id") in chips and "spi" in op
+    )
     ordered_chip_ids = [chip_id for _, chip_id in te_order]
 
-    # Walk SmartChip nodes in document order
-    smart_chips_in_order: list[tuple[object, list, int]] = []
-    for tab in doc.tabs:
-        for block in tab.blocks:
-            if not isinstance(block, (Paragraph, Heading, ListItem)):
-                continue
-            for i, run in enumerate(block.runs):
-                if isinstance(run, SmartChip):
-                    smart_chips_in_order.append((block, block.runs, i))
+    smart_chips: list[tuple[list, int]] = []
+    for block in tab.blocks:
+        if not isinstance(block, _BLOCK_TYPES):
+            continue
+        for i, run in enumerate(block.runs):
+            if isinstance(run, SmartChip):
+                smart_chips.append((block.runs, i))
 
-    # Pair positionally
     count = 0
-    for (_block, runs, idx), chip_id in zip(smart_chips_in_order, ordered_chip_ids, strict=False):
+    for (runs, idx), chip_id in zip(smart_chips, ordered_chip_ids, strict=False):
         data = chips[chip_id]
         voters = [Voter(obfuscated_id=v) for v in data["voters"]]
-        replacement = VotingChip(
+        runs[idx] = VotingChip(
             chip_id=chip_id,
             emoji=data["emoji"],
             voters=voters,
             current_user_voted=data["current_user_voted"],
             signature=data["signature"],
         )
-        runs[idx] = replacement
         count += 1
     return count
+
+
+# --- suggestion colors -----------------------------------------------------
 
 
 def _enrich_suggestion_colors(doc: Document, model: KixModel) -> int:
