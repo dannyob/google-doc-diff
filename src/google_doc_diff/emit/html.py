@@ -38,6 +38,7 @@ from google_doc_diff.ast.nodes import (
     Table,
     TableOfContents,
     Unsupported,
+    VotingChip,
 )
 from google_doc_diff.styles.classes import synthesize_inline_class
 from google_doc_diff.styles.css import build_css
@@ -274,6 +275,8 @@ def _emit_inline(node, doc: Document) -> str:
         return f'<a id="{_attr(node.bookmark_id)}"></a>'
     if isinstance(node, NamedRangeAnchor):
         return f'<a id="{_attr(node.named_range_id)}"></a>'
+    if isinstance(node, VotingChip):
+        return _emit_voting_chip(node)
     if isinstance(node, SmartChip):
         return _emit_smart_chip(node)
     if isinstance(node, InlineEquation):
@@ -334,6 +337,21 @@ def _smart_chip_default_text(c: SmartChip) -> str:
     if c.kind == "person":
         return f"@{c.data.get('email', '?')}"
     return c.kind
+
+
+def _emit_voting_chip(c: VotingChip) -> str:
+    visible = f"{c.emoji} {len(c.voters)}".strip()
+    voters = ",".join(v.obfuscated_id for v in c.voters)
+    attrs = [
+        'class="gd-voting-chip"',
+        f'data-chip-id="{_attr(c.chip_id)}"',
+        f'data-emoji="{_attr(c.emoji)}"',
+        f'data-voters="{_attr(voters)}"',
+        f'data-current-user-voted="{str(c.current_user_voted).lower()}"',
+    ]
+    if c.signature:
+        attrs.append(f'data-signature="{_attr(c.signature)}"')
+    return f"<span {' '.join(attrs)}>{_html_escape(visible)}</span>"
 
 
 def _emit_unsupported(u: Unsupported, *, inline: bool) -> str:
