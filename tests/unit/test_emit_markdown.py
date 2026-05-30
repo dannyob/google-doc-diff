@@ -315,6 +315,36 @@ def test_smart_chip_person_default_visible_text():
     assert 'data-kind="person"' in md
 
 
+def test_readable_strips_paragraph_ids():
+    doc = make_doc(tabs=single_default_tab([
+        Heading(level=1, runs=[Run(text="Title")], paragraph_id="p-0-0"),
+        Paragraph(runs=[Run(text="Body text")], paragraph_id="p-0-1"),
+        ListItem(level=0, kind="bulleted", list_id="L1",
+                 runs=[Run(text="Item")], paragraph_id="p-0-2"),
+    ]))
+    md = emit_document_md(doc, readable=True)
+    # ids are stripped from the readable output
+    assert "p-0-0" not in md
+    assert "p-0-1" not in md
+    assert "p-0-2" not in md
+    # but the content is still there
+    assert "Title" in md
+    assert "Body text" in md
+    assert "Item" in md
+    # and the doc is left unmutated
+    assert doc.tabs[0].blocks[0].paragraph_id == "p-0-0"
+    assert doc.tabs[0].blocks[1].paragraph_id == "p-0-1"
+    assert doc.tabs[0].blocks[2].paragraph_id == "p-0-2"
+
+
+def test_default_keeps_paragraph_ids():
+    doc = make_doc(tabs=single_default_tab([
+        Paragraph(runs=[Run(text="Body")], paragraph_id="p-0-0"),
+    ]))
+    md = emit_document_md(doc)
+    assert "p-0-0" in md
+
+
 def test_voting_chip_emits_emoji_count_and_voters():
     doc = make_doc(tabs=single_default_tab([
         Paragraph(runs=[

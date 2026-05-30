@@ -51,8 +51,49 @@ from google_doc_diff.styles.classes import synthesize_inline_class
 from google_doc_diff.styles.css import build_css
 
 
-def emit_document_md(doc: Document) -> str:
-    """Render a Document to a single Markdown string."""
+def emit_document_md(doc: Document, *, readable: bool = False) -> str:
+    """Render a Document to a single Markdown string.
+
+    When ``readable`` is True, paragraph_id anchors (used by ``gdoc push`` for
+    surgical 3-way merge) are stripped from the output for human reading. The
+    doc is mutated only for the duration of the call and restored before
+    returning, so callers can pass the same doc to other emitters afterwards.
+    """
+    if readable:
+        saved: list[tuple[object, str | None]] = [
+            (block, block.paragraph_id) for block in _walk_paragraph_blocks(doc)
+        ]
+        for block, _ in saved:
+            block.paragraph_id = None
+        try:
+            return _emit_document_md(doc)
+        finally:
+            for block, pid in saved:
+                block.paragraph_id = pid
+    return _emit_document_md(doc)
+
+
+def _walk_paragraph_blocks(doc: Document):
+    """Yield every Heading/Paragraph/ListItem in the doc, including those
+    nested in table cells and child tabs."""
+    def walk_blocks(blocks):
+        for block in blocks:
+            if isinstance(block, (Heading, Paragraph, ListItem)):
+                yield block
+            elif isinstance(block, Table):
+                for row in block.rows:
+                    for cell in row.cells:
+                        yield from walk_blocks(cell.blocks)
+
+    def walk_tabs(tabs):
+        for tab in tabs:
+            yield from walk_blocks(tab.blocks)
+            yield from walk_tabs(tab.children)
+
+    yield from walk_tabs(doc.tabs)
+
+
+def _emit_document_md(doc: Document) -> str:
     out = io.StringIO()
     out.write(_emit_frontmatter(doc))
     out.write("\n")

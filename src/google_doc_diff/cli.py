@@ -139,7 +139,10 @@ def auth_status_cmd():
 @click.option("--no-kix", is_flag=True,
               help="Skip kix enrichment even if Chrome cookies are available.")
 @click.option("--verbose", is_flag=True, help="Print enrichment diagnostics.")
-def pull(doc, out, html_out, extract_assets, revision, chip_counts, kix_cookies, kix_profile, no_kix, verbose):
+@click.option("--readable", is_flag=True,
+              help="Strip paragraph_id anchors for a human-readable view. "
+                   "Disables surgical 3-way merge on a later `gdoc push`.")
+def pull(doc, out, html_out, extract_assets, revision, chip_counts, kix_cookies, kix_profile, no_kix, verbose, readable):
     """Pull a Google Doc and write Markdown (and optionally HTML).
 
     DOC is a doc ID, a Google Docs URL, or the path to an existing local
@@ -172,7 +175,7 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts, kix_cookies,
             verbose=verbose,
         )
 
-    md = emit_document_md(document)
+    md = emit_document_md(document, readable=readable)
 
     out_path = out or path_hint or Path(_slugify(document.title) + ".md")
     out_path.write_text(md)
