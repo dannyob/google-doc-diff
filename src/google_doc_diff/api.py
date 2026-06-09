@@ -1,8 +1,9 @@
 """Google Docs / Drive API wrappers with rate-limit handling.
 
 `GdocAPI` builds Drive v2, Drive v3, and Docs v1 service handles. Every API
-call goes through `_with_backoff`, which retries on 429 with exponential
-backoff + jitter (1, 2, 4, 8, max 60s; up to 5 retries).
+call goes through `_with_backoff`, which retries rate-limit errors (429, or
+403 with a usageLimits rateLimitExceeded reason — Drive uses both) with
+exponential backoff + jitter (1, 2, 4, 8, max 60s; up to 5 retries).
 
 `fetch_revision_export` uses the Drive v2 `exportLinks` URLs (returned by
 `revisions.list`) — verified live on 2026-05-09. Per-revision content is not
@@ -144,18 +145,18 @@ class GdocAPI:
 
     def _with_backoff(self, factory, *args, **kwargs) -> Any:
         """Wrap a googleapiclient call (factory(*args, **kwargs).execute()) with
-        exponential backoff on 429."""
+        exponential backoff on rate-limit errors."""
         last: BaseException | None = None
         for attempt in range(5):
             try:
                 return factory(*args, **kwargs).execute()
             except HttpError as e:
-                if getattr(e, "status_code", None) == 429 or e.resp.status == 429:
+                if _is_rate_limit(e):
                     last = e
                     self._sleep_for_attempt(attempt)
                     continue
                 raise
-        raise APIError("too many 429s; gave up after 5 attempts") from last
+        raise APIError("rate-limited; gave up after 5 attempts") from last
 
     def _with_backoff_http(self, fn, *args) -> bytes:
         last: BaseException | None = None
@@ -175,6 +176,15 @@ class GdocAPI:
         base = min(60, 2 ** attempt)         # 1, 2, 4, 8, 16, 32, 60...
         jitter = random.uniform(0, 0.5 * base)
         time.sleep(base + jitter)
+
+
+def _is_rate_limit(e: HttpError) -> bool:
+    """Drive reports rate limiting as 429, or as 403 with a usageLimits
+    reason (rateLimitExceeded / userRateLimitExceeded)."""
+    status = getattr(e, "status_code", None) or e.resp.status
+    if status == 429:
+        return True
+    return status == 403 and b"ateLimitExceeded" in (e.content or b"")
 
 
 class _Transient(Exception):
