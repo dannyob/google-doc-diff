@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test clean build upload upload-test check-version lint format
+.PHONY: help install install-dev install-local test clean build upload upload-test check-version lint format
 .DEFAULT_GOAL := help
 
 # Configuration
@@ -17,6 +17,9 @@ venv: ## Create virtual environment
 
 install: venv ## Install package in development mode
 	source .venv/bin/activate && $(UV) pip install -e .
+
+install-local: ## Install into uv tool namespace (uv tool install)
+	$(UV) tool install --force '.[kix]'
 
 install-dev: venv ## Install package with development dependencies
 	source .venv/bin/activate && $(UV) pip install -e .
