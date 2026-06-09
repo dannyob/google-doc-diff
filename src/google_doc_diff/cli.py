@@ -24,6 +24,8 @@ from google_doc_diff.auth import (
 )
 from google_doc_diff.emit import emit_document_html, emit_document_md
 
+logger = logging.getLogger(__name__)
+
 
 def resolve_doc_target(s: str) -> tuple[str, Path | None]:
     """Resolve a positional DOC argument to (doc_id, path_hint).
@@ -633,16 +635,24 @@ def _pull_rich_document_with_raw(api, doc_id, *, chip_counts=True):
     comments_json = api.list_comments(doc_id)
     document = build_document(docs_json, comments_json)
     if chip_counts and has_pua_widgets(document):
-        from google_doc_diff.ast.chip_counts import attach_widget_renderings
-        try:
-            revs = api.list_revisions(doc_id)
-            md_url = ((revs[-1] if revs else {}).get("exportLinks") or {}).get("text/markdown")
-            if md_url:
-                md_text = api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
-                attach_widget_renderings(document, md_text)
-        except Exception:
-            pass   # best-effort
+        _attach_chip_counts(api, doc_id, document=document)
     return document, docs_json
+
+
+def _attach_chip_counts(api, doc_id, *, document) -> None:
+    """Best-effort: recover chip emoji + counts from the markdown export.
+
+    Failures (the export endpoint can be slow or flaky on large docs) leave
+    the '?' placeholders in place but are logged so they're not invisible."""
+    from google_doc_diff.ast.chip_counts import attach_widget_renderings
+    try:
+        revs = api.list_revisions(doc_id)
+        md_url = ((revs[-1] if revs else {}).get("exportLinks") or {}).get("text/markdown")
+        if md_url:
+            md_text = api.fetch_revision_export(md_url).decode("utf-8", errors="replace")
+            attach_widget_renderings(document, md_text)
+    except Exception as exc:
+        logger.warning("chip-count recovery via markdown export failed: %s", exc)
 
 
 def _have_browser_cookie3() -> bool:

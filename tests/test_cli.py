@@ -235,3 +235,50 @@ def test_reconcile_ignores_uncommitted_event_drift():
     new = [_ev("rev-1", "prose_change", t, "a@x")]  # c-pending vanished
     ok, _ = _can_reconcile(saved, new)
     assert ok
+
+
+# -- chip-counts attachment ---------------------------------------------------
+
+def test_attach_chip_counts_logs_on_failure(caplog):
+    """A failed markdown-export fetch must be reported, not swallowed."""
+    import logging
+
+    from google_doc_diff.cli import _attach_chip_counts
+
+    class FailingAPI:
+        def list_revisions(self, doc_id):
+            raise RuntimeError("export timed out")
+
+    with caplog.at_level(logging.WARNING, logger="google_doc_diff.cli"):
+        _attach_chip_counts(FailingAPI(), "doc123", document=None)
+
+    assert any("chip" in r.message.lower() for r in caplog.records)
+
+
+def test_attach_chip_counts_attaches_renderings():
+    from datetime import UTC, datetime
+
+    from google_doc_diff.ast.nodes import Document, Paragraph, Run, SmartChip, Tab
+    from google_doc_diff.cli import _attach_chip_counts
+
+    chip = SmartChip(kind="reaction", data={"glyph": "U+E907"}, display_text="?")
+    doc = Document(
+        doc_id="doc123", title="T", revision_id="r1",
+        drive_url="https://docs.google.com/document/d/doc123/edit",
+        captured_at=datetime.now(UTC), schema_version=1,
+        last_modifying_user=None, source_mode="pull",
+        comments_preserved=True, suggestions_preserved=True,
+        tabs=[Tab(tab_id="t.0", title="Tab", level=0,
+                  blocks=[Paragraph(runs=[Run(text="rate it: "), chip])])],
+    )
+
+    class API:
+        def list_revisions(self, doc_id):
+            return [{"exportLinks": {"text/markdown": "https://export.invalid/md"}}]
+
+        def fetch_revision_export(self, url):
+            return "rate it: (➕ 7)\n".encode()
+
+    _attach_chip_counts(API(), "doc123", document=doc)
+    assert chip.data.get("count") == 7
+    assert chip.data.get("emoji") == "➕"

@@ -132,7 +132,12 @@ class GdocAPI:
             "Authorization": f"Bearer {self._creds.token}",
             "User-Agent": USER_AGENT,
         }
-        r = requests.get(url, headers=headers, timeout=30)
+        try:
+            # Markdown/HTML exports of large, busy docs can take well over
+            # 30s to render server-side before the first byte arrives.
+            r = requests.get(url, headers=headers, timeout=180)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            raise _Transient(599) from e
         if r.status_code == 429 or 500 <= r.status_code < 600:
             # Google's export endpoint flakes with transient 5xx errors;
             # treat them like rate-limiting and retry.

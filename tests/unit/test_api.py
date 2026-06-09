@@ -102,3 +102,55 @@ def test_with_backoff_does_not_retry_plain_403(monkeypatch):
     with pytest.raises(HttpError):
         api._with_backoff(lambda: Request())
     assert calls["n"] == 1
+
+
+# -- _do_get / _with_backoff_http transient handling --------------------------
+
+import requests
+
+from google_doc_diff.api import _Transient
+
+
+def test_do_get_raises_transient_on_timeout(monkeypatch):
+    api = _bare_api(monkeypatch)
+    api._creds = type("C", (), {"token": "tok"})()
+
+    def fake_get(url, headers=None, timeout=None):
+        raise requests.Timeout("read timed out")
+
+    monkeypatch.setattr("google_doc_diff.api.requests.get", fake_get)
+    with pytest.raises(_Transient):
+        api._do_get("https://example.invalid/export")
+
+
+def test_do_get_uses_generous_timeout(monkeypatch):
+    """Markdown exports of large docs exceed 30s; give them room."""
+    api = _bare_api(monkeypatch)
+    api._creds = type("C", (), {"token": "tok"})()
+    seen = {}
+
+    class Resp:
+        status_code = 200
+        content = b"ok"
+
+    def fake_get(url, headers=None, timeout=None):
+        seen["timeout"] = timeout
+        return Resp()
+
+    monkeypatch.setattr("google_doc_diff.api.requests.get", fake_get)
+    assert api._do_get("https://example.invalid/export") == b"ok"
+    assert seen["timeout"] >= 120
+
+
+def test_with_backoff_http_retries_transient(monkeypatch):
+    api = _bare_api(monkeypatch)
+    calls = {"n": 0}
+
+    def fn():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _Transient(599)
+        return b"data"
+
+    assert api._with_backoff_http(fn) == b"data"
+    assert calls["n"] == 3
