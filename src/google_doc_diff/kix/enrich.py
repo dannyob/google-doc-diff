@@ -26,6 +26,7 @@ from google_doc_diff.ast.nodes import (
     ListItem,
     Paragraph,
     SmartChip,
+    Table,
     Voter,
     VotingChip,
 )
@@ -106,10 +107,17 @@ def _parse_voting_chips(ops: list[dict]) -> dict[str, dict]:
     return chips
 
 
+def _iter_tabs(tabs):
+    """Yield tabs depth-first, including nested child tabs."""
+    for tab in tabs:
+        yield tab
+        yield from _iter_tabs(tab.children)
+
+
 def _enrich_voting_chips(doc: Document, model: KixModel) -> int:
     """Replace SmartChip nodes with VotingChip nodes, per tab."""
     count = 0
-    for tab in doc.tabs:
+    for tab in _iter_tabs(doc.tabs):
         ops = _model_ops_for_tab(model, tab)
         if ops:
             count += _enrich_voting_chips_in_tab(tab, ops)
@@ -129,15 +137,18 @@ def _enrich_voting_chips_in_tab(tab, ops: list[dict]) -> int:
     ordered_chip_ids = [chip_id for _, chip_id in te_order]
 
     smart_chips: list[tuple[list, int]] = []
-    for block in tab.blocks:
-        if not isinstance(block, _BLOCK_TYPES):
-            continue
-        for i, run in enumerate(block.runs):
-            if isinstance(run, SmartChip):
-                smart_chips.append((block.runs, i))
+    _collect_smart_chips(tab.blocks, smart_chips)
+
+    if len(smart_chips) != len(ordered_chip_ids):
+        logger.warning(
+            "tab %s: %d widget chips in AST vs %d voting chips in kix stream; "
+            "skipping enrichment to avoid mispairing",
+            tab.tab_id, len(smart_chips), len(ordered_chip_ids),
+        )
+        return 0
 
     count = 0
-    for (runs, idx), chip_id in zip(smart_chips, ordered_chip_ids, strict=False):
+    for (runs, idx), chip_id in zip(smart_chips, ordered_chip_ids, strict=True):
         data = chips[chip_id]
         voters = [Voter(obfuscated_id=v) for v in data["voters"]]
         runs[idx] = VotingChip(
@@ -149,6 +160,24 @@ def _enrich_voting_chips_in_tab(tab, ops: list[dict]) -> int:
         )
         count += 1
     return count
+
+
+def _collect_smart_chips(blocks, out: list[tuple[list, int]]) -> None:
+    """Collect (runs, index) for every widget SmartChip in document order,
+    descending into table cells.
+
+    Only PUA-glyph placeholders (see ``from_docs_json._split_chips``) can be
+    voting chips; person/richlink/date chips carry no ``glyph`` and must not
+    consume a pairing slot."""
+    for block in blocks:
+        if isinstance(block, _BLOCK_TYPES):
+            for i, run in enumerate(block.runs):
+                if isinstance(run, SmartChip) and "glyph" in run.data:
+                    out.append((block.runs, i))
+        elif isinstance(block, Table):
+            for row in block.rows:
+                for cell in row.cells:
+                    _collect_smart_chips(cell.blocks, out)
 
 
 # --- suggestion colors -----------------------------------------------------

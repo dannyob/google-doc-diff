@@ -3,12 +3,15 @@
 from datetime import UTC, datetime
 
 from google_doc_diff.ast.nodes import (
+    Cell,
     Document,
     Paragraph,
+    Row,
     Run,
     SmartChip,
     Suggestion,
     Tab,
+    Table,
     VotingChip,
 )
 from google_doc_diff.kix.enrich import enrich_from_kix
@@ -101,7 +104,9 @@ class TestVotingChipEnrichment:
                     runs=[
                         Run(text="Vote here: "),
                         SmartChip(
-                            kind="voting", data={"rendered": "(➕ 2)"}, display_text="(➕ 2)"
+                            kind="voting",
+                            data={"glyph": "U+E907", "rendered": "(➕ 2)"},
+                            display_text="(➕ 2)",
                         ),
                     ]
                 ),
@@ -150,6 +155,148 @@ class TestVotingChipEnrichment:
         result = enrich_from_kix(doc, model)
         assert result.voting_chips_enriched == 0
 
+    def test_non_widget_chips_do_not_consume_pairing_slots(self):
+        """A richlink/person/date SmartChip (no PUA glyph) before a voting chip
+        must not shift the voting-chip pairing."""
+        tab = Tab(
+            tab_id="t.0",
+            title="Tab 1",
+            level=0,
+            blocks=[
+                Paragraph(runs=[
+                    SmartChip(kind="richlink-slides", data={"uri": "https://x"},
+                              display_text="Slides"),
+                ]),
+                Paragraph(runs=[
+                    SmartChip(kind="reaction", data={"glyph": "U+E907"}, display_text="?"),
+                ]),
+            ],
+        )
+        doc = _make_doc(tabs=[tab])
+        ops = [
+            {"ty": "ae", "et": "emoji-voting", "id": "kix.c1", "epm": {}},
+            {"ty": "te", "id": "kix.c1", "spi": 0},
+            {
+                "ty": "nm",
+                "nmr": ["dtvc", "kix.c1", False],
+                "nmc": ["voting-chip-populate", "🟠", [{"ui": {"ui_oi": "v1"}}], False, "s1"],
+            },
+        ]
+        model = _make_model(ops)
+
+        result = enrich_from_kix(doc, model)
+        assert result.voting_chips_enriched == 1
+        richlink = doc.tabs[0].blocks[0].runs[0]
+        assert isinstance(richlink, SmartChip) and richlink.kind == "richlink-slides"
+        chip = doc.tabs[0].blocks[1].runs[0]
+        assert isinstance(chip, VotingChip)
+        assert chip.emoji == "🟠"
+
+    def test_count_mismatch_skips_tab_instead_of_mispairing(self):
+        """If the AST widget count differs from the kix voting-chip count the
+        pairing is unreliable; leave the tab untouched."""
+        tab = Tab(
+            tab_id="t.0",
+            title="Tab 1",
+            level=0,
+            blocks=[
+                Paragraph(runs=[
+                    SmartChip(kind="reaction", data={"glyph": "U+E907"}, display_text="?"),
+                    SmartChip(kind="reaction", data={"glyph": "U+E907"}, display_text="?"),
+                ]),
+            ],
+        )
+        doc = _make_doc(tabs=[tab])
+        ops = [
+            {"ty": "ae", "et": "emoji-voting", "id": "kix.c1", "epm": {}},
+            {"ty": "te", "id": "kix.c1", "spi": 0},
+            {
+                "ty": "nm",
+                "nmr": ["dtvc", "kix.c1", False],
+                "nmc": ["voting-chip-populate", "➕", [{"ui": {"ui_oi": "v1"}}], False, "s1"],
+            },
+        ]
+        model = _make_model(ops)
+
+        result = enrich_from_kix(doc, model)
+        assert result.voting_chips_enriched == 0
+        assert all(isinstance(r, SmartChip) for r in doc.tabs[0].blocks[0].runs)
+
+    def test_enriches_chips_in_child_tabs(self):
+        child = Tab(
+            tab_id="t.child",
+            title="Session tab",
+            level=1,
+            blocks=[
+                Paragraph(runs=[SmartChip(kind="voting", data={"glyph": "U+E907"}, display_text="(➕ 1)")]),
+            ],
+        )
+        parent = Tab(tab_id="t.0", title="Schedule", level=0, blocks=[], children=[child])
+        doc = _make_doc(tabs=[parent])
+        ops = [
+            {"ty": "ae", "et": "emoji-voting", "id": "kix.c1", "epm": {}},
+            {"ty": "te", "id": "kix.c1", "spi": 0},
+            {
+                "ty": "nm",
+                "nmr": ["dtvc", "kix.c1", False],
+                "nmc": ["voting-chip-populate", "➕", [{"ui": {"ui_oi": "v1"}}], False, "s1"],
+            },
+        ]
+        model = _make_model(ops_by_tab={"t.child": ops})
+
+        result = enrich_from_kix(doc, model)
+        assert result.voting_chips_enriched == 1
+        chip = doc.tabs[0].children[0].blocks[0].runs[0]
+        assert isinstance(chip, VotingChip)
+        assert chip.emoji == "➕"
+
+    def test_enriches_chips_inside_tables(self):
+        tab = Tab(
+            tab_id="t.0",
+            title="Tab 1",
+            level=0,
+            blocks=[
+                Paragraph(runs=[SmartChip(kind="voting", data={"glyph": "U+E907"}, display_text="(👍 1)")]),
+                Table(rows=[Row(cells=[Cell(blocks=[
+                    Paragraph(runs=[
+                        Run(text="cell comment "),
+                        SmartChip(kind="voting", data={"glyph": "U+E907"}, display_text="(🚀 3)"),
+                    ]),
+                ])])]),
+            ],
+        )
+        doc = _make_doc(tabs=[tab])
+        ops = [
+            {"ty": "ae", "et": "emoji-voting", "id": "kix.c1", "epm": {}},
+            {"ty": "te", "id": "kix.c1", "spi": 0},
+            {
+                "ty": "nm",
+                "nmr": ["dtvc", "kix.c1", False],
+                "nmc": ["voting-chip-populate", "👍", [{"ui": {"ui_oi": "v1"}}], False, "s1"],
+            },
+            {"ty": "ae", "et": "emoji-voting", "id": "kix.c2", "epm": {}},
+            {"ty": "te", "id": "kix.c2", "spi": 6},
+            {
+                "ty": "nm",
+                "nmr": ["dtvc", "kix.c2", False],
+                "nmc": [
+                    "voting-chip-populate",
+                    "🚀",
+                    [{"ui": {"ui_oi": "v2"}}, {"ui": {"ui_oi": "v3"}}],
+                    False,
+                    "s2",
+                ],
+            },
+        ]
+        model = _make_model(ops)
+
+        result = enrich_from_kix(doc, model)
+        assert result.voting_chips_enriched == 2
+        table_chip = doc.tabs[0].blocks[1].rows[0].cells[0].blocks[0].runs[1]
+        assert isinstance(table_chip, VotingChip)
+        assert table_chip.emoji == "🚀"
+        assert len(table_chip.voters) == 2
+
     def test_multiple_chips_ordered_by_placement(self):
         tab = Tab(
             tab_id="t.0",
@@ -158,9 +305,9 @@ class TestVotingChipEnrichment:
             blocks=[
                 Paragraph(
                     runs=[
-                        SmartChip(kind="voting", data={}, display_text="(👍 1)"),
+                        SmartChip(kind="voting", data={"glyph": "U+E907"}, display_text="(👍 1)"),
                         Run(text=" and "),
-                        SmartChip(kind="voting", data={}, display_text="(🚀 3)"),
+                        SmartChip(kind="voting", data={"glyph": "U+E907"}, display_text="(🚀 3)"),
                     ]
                 ),
             ],
