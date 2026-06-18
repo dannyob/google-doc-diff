@@ -31,13 +31,13 @@ DOC_B = "BBBBBBBBBBBBBBBBBBBBBBB"
 def _fake_api_for(doc_id):
     """One prose revision via Drive v2 exportLinks, no comments.
 
-    Use doc_id as part of the revision id so commits from different docs
-    have different Gdoc-event trailers and don't cross-match in reconstruction.
+    Both docs intentionally use revision id "1" to exercise cross-doc
+    isolation: without file-scoped git log, doc B's reconstruction would
+    match doc A's rev-1 commit and silently skip B's prose commit.
     """
     api = mock.Mock()
-    rev_id = doc_id[:8]  # unique per doc, deterministic
     rev = {
-        "id": rev_id,
+        "id": "1",  # intentionally identical across docs — tests isolation
         "modifiedDate": "2026-01-01T00:00:00.000Z",
         "lastModifyingUser": {"emailAddress": "a@b", "displayName": "A"},
         "exportLinks": {"text/markdown": f"https://example/{doc_id}/md"},
@@ -82,6 +82,10 @@ def test_two_docs_one_repo_independent_state(repo):
     assert r2.exit_code == 0, r2.output
     assert (repo / ".gdoc-state" / f"{DOC_A}.json").exists()
     assert (repo / ".gdoc-state" / f"{DOC_B}.json").exists()
+    # Both docs produce one prose commit each (+ 1 head-state commit = 3 total).
+    # With identical revision id "1", an unscoped git log would match doc A's
+    # rev-1 commit during doc B's reconstruction and silently skip B's prose
+    # commit; the file-scoped fix ensures both are present.
     assert _count_commits(repo) == 3  # 1 prose commit per doc + 1 head-state commit
 
 

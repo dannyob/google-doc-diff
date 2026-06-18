@@ -30,22 +30,34 @@ def commit_message_for(ev) -> str:
     return ev.kind
 
 
-def reconstruct_committed_set(events, cwd: Path) -> dict[str, str]:
+def reconstruct_committed_set(events, cwd: Path, out_path=None) -> dict[str, str]:
     """Recover {event_id: sha} from git history when the state file is gone.
 
     Each replay commit carries a `Gdoc-event: <event_id>` trailer (exact
     match). Commits predating that trailer are matched by
     (commit_message_for(ev), author-date), which is unique in practice.
     Only events present in `events` are returned.
+
+    When `out_path` is given, the git log is restricted to commits that touch
+    that file, preventing commits from other docs (which may share the same
+    integer revision id sequence) from being matched. Pass the doc's output
+    .md path to enable cross-doc isolation in a shared repo.
     """
     import subprocess
     from datetime import datetime
 
     # sha \0 author-date \0 subject \0 trailer-value, one record per commit.
     fmt = "%H%x00%aI%x00%s%x00%(trailers:key=Gdoc-event,valueonly)"
+    argv = ["git", "log", f"--format={fmt}"]
+    if out_path is not None:
+        try:
+            relpath = str(out_path.relative_to(cwd))
+        except (ValueError, AttributeError):
+            relpath = str(out_path)
+        argv += ["--", relpath]
     try:
         out = subprocess.run(
-            ["git", "log", f"--format={fmt}"],
+            argv,
             cwd=str(cwd), capture_output=True, text=True,
         )
     except FileNotFoundError:

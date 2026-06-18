@@ -56,3 +56,34 @@ def test_reconstruct_empty_when_no_repo_history(tmp_path):
     _init_repo(tmp_path)
     e1 = _ev("prose_change", datetime(2026, 1, 1, tzinfo=UTC), revision_id="1")
     assert reconstruct_committed_set([e1], tmp_path) == {}
+
+
+def test_reconstruct_scoped_to_out_path_prevents_cross_doc_collision(tmp_path):
+    """File-scoped git log must return B's sha, not A's, when both use rev-1.
+
+    Without out_path scoping, doc B's reconstruction would match doc A's
+    rev-1 commit (same Gdoc-event trailer) and wrongly mark B's event as
+    already committed.
+    """
+    _init_repo(tmp_path)
+
+    # Commit doc A: touches a.md, event_id rev-1.
+    (tmp_path / "a.md").write_text("doc A v1")
+    gitwrap.add([tmp_path / "a.md"], cwd=tmp_path)
+    ts = datetime(2026, 1, 1, tzinfo=UTC)
+    eA = _ev("prose_change", ts, revision_id="1")
+    sha_a = gitwrap.commit("prose: revision 1", author_name="A", author_email="a@b",
+                           timestamp=ts, cwd=tmp_path, event_id=eA.event_id)
+
+    # Commit doc B: touches b.md, also event_id rev-1 (identical revision id).
+    (tmp_path / "b.md").write_text("doc B v1")
+    gitwrap.add([tmp_path / "b.md"], cwd=tmp_path)
+    ts2 = datetime(2026, 1, 2, tzinfo=UTC)
+    eB = _ev("prose_change", ts2, revision_id="1")
+    sha_b = gitwrap.commit("prose: revision 1", author_name="A", author_email="a@b",
+                           timestamp=ts2, cwd=tmp_path, event_id=eB.event_id)
+
+    # Scoped to b.md: must return B's sha, not A's.
+    result = reconstruct_committed_set([eB], tmp_path, out_path=tmp_path / "b.md")
+    assert result == {eB.event_id: sha_b}
+    assert result[eB.event_id] != sha_a

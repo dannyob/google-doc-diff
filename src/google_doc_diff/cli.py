@@ -325,7 +325,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     # continues instead of duplicating commits.
     if existing is None and commit and (cwd / ".git").exists():
         from google_doc_diff.replay.state import reconstruct_committed_set
-        recovered = reconstruct_committed_set(events, cwd)
+        recovered = reconstruct_committed_set(events, cwd, out_path)
         if recovered:
             existing = ReplayState(
                 doc_id=doc_id, out_path=str(out_path),
