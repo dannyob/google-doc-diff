@@ -11,15 +11,21 @@ class GitError(RuntimeError):
     pass
 
 
-def is_clean(cwd: Path | None = None, ignore: list[str] | None = None) -> bool:
+def is_clean(
+    cwd: Path | None = None,
+    ignore: list[str] | None = None,
+    ignore_prefixes: list[str] | None = None,
+) -> bool:
     """True iff the working tree has no staged/unstaged changes (excluding
-    untracked, plus any paths in `ignore`)."""
+    untracked, plus any paths in `ignore` or under any of `ignore_prefixes`)."""
     r = _run(["git", "status", "--porcelain"], cwd=cwd, capture=True)
     ignored = set(ignore or [])
+    prefixes = tuple(ignore_prefixes or ())
     for line in r.stdout.splitlines():
-        # porcelain v1 lines: "XY path" — extract path
         path = line[3:].strip()
         if path in ignored:
+            continue
+        if prefixes and path.startswith(prefixes):
             continue
         return False
     return True

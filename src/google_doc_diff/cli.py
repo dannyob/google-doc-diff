@@ -296,13 +296,6 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     state_file = default_state_path(doc_id, cwd)
 
     existing = read_state(state_file)
-    if existing and not (resume or restart):
-        click.echo(
-            f"{state_file} exists. Use --resume to continue "
-            "or --restart to discard.",
-            err=True,
-        )
-        sys.exit(2)
     if restart:
         remove_state(state_file)
         existing = None
@@ -327,6 +320,35 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     )
     new_hash = timeline_hash(events)
 
+    # If no state file but we're committing into an existing git history
+    # (e.g. a fresh checkout), rebuild the committed-set from git so resume
+    # continues instead of duplicating commits.
+    if existing is None and commit and (cwd / ".git").exists():
+        from google_doc_diff.replay.state import reconstruct_committed_set
+        recovered = reconstruct_committed_set(events, cwd)
+        if recovered:
+            existing = ReplayState(
+                doc_id=doc_id, out_path=str(out_path),
+                extract_assets=extract_assets, include_comments=include_comments,
+                since=since, until=until, timeline_hash=new_hash,
+                events=[EventState(**event_to_state_dict(e)) for e in events],
+            )
+            for est in existing.events:
+                if est.id in recovered:
+                    est.status = "committed"
+                    est.git_sha = recovered[est.id]
+            click.echo(
+                f"reconstructed {len(recovered)} committed event(s) from git history."
+            )
+
+    if existing and not (resume or restart):
+        click.echo(
+            f"replay history exists for this doc ({state_file} or git). "
+            "Use --resume to continue or --restart to discard.",
+            err=True,
+        )
+        sys.exit(2)
+
     if existing and resume:
         ok, reason = _can_reconcile(existing, events)
         if not ok:
@@ -345,16 +367,28 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
                 err=True,
             )
             sys.exit(2)
-        # State file + the in-flight output .md are expected-dirty.
-        ignore = [".gdoc-state"]
+        # State dir + the in-flight output .md are expected-dirty.
+        ignore = []
         try:
             ignore.append(str(out_path.relative_to(cwd)))
         except ValueError:
-            pass
-        if not gitwrap.is_clean(cwd, ignore=ignore):
+            # out_path is already relative; use it as-is.
+            if not out_path.is_absolute():
+                ignore.append(str(out_path))
+        if not gitwrap.is_clean(cwd, ignore=ignore,
+                                ignore_prefixes=[".gdoc-state/", ".gdoc-state"]):
             click.echo("git working tree is dirty; commit or stash first, or "
                        "pass --no-commit.", err=True)
             sys.exit(2)
+        # Nudge the user to gitignore the cache dir (we don't edit it for them).
+        gi = cwd / ".gitignore"
+        already = gi.exists() and any(
+            line.strip().rstrip("/") == ".gdoc-state"
+            for line in gi.read_text().splitlines()
+        )
+        if not already:
+            click.echo("hint: add '.gdoc-state/' to .gitignore "
+                       "(replay state is a rebuildable cache).", err=True)
 
     if dry_run:
         for ev in events:
