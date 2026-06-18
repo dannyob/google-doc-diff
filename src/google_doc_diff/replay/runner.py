@@ -28,6 +28,7 @@ from google_doc_diff.ast.from_google_md import build_from_google_md
 from google_doc_diff.ast.nodes import Comment, CommentReply, Document
 from google_doc_diff.emit import emit_document_md
 from google_doc_diff.replay import git as gitwrap
+from google_doc_diff.replay.state import commit_message_for
 from google_doc_diff.replay.timeline import Event
 
 
@@ -222,7 +223,7 @@ class ReplayRunner:
         except ValueError:
             pass
         gitwrap.add([rel_path], cwd=self.opt.cwd)
-        msg = _commit_message_for(ev)
+        msg = commit_message_for(ev)
         name, email = _split_author(ev.author)
         return gitwrap.commit(
             msg,
@@ -284,24 +285,6 @@ def _comment_from_api(c: dict) -> Comment:
         deleted=bool(c.get("deleted")),
         replies=[],
     )
-
-
-def _commit_message_for(ev: Event) -> str:
-    if ev.kind == "prose_change":
-        return f"prose: revision {ev.revision_id}"
-    if ev.kind == "comment_create":
-        return f"comment: {ev.comment_id}"
-    if ev.kind == "comment_edit":
-        return f"comment edit: {ev.comment_id}"
-    if ev.kind == "comment_delete":
-        return f"comment delete: {ev.comment_id}"
-    if ev.kind == "reply_create":
-        return f"reply: {ev.comment_id} {ev.reply_id}"
-    if ev.kind == "reply_resolve":
-        return f"resolve: {ev.comment_id}"
-    if ev.kind == "reply_reopen":
-        return f"reopen: {ev.comment_id}"
-    return ev.kind
 
 
 def _split_author(author: str) -> tuple[str, str]:

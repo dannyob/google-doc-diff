@@ -10,6 +10,77 @@ STATE_DIRNAME = ".gdoc-state"
 LEGACY_STATE_FILENAME = ".gdoc-replay-state.json"
 
 
+def commit_message_for(ev) -> str:
+    """Commit subject for a replay event. Shared by the runner (to write
+    commits) and reconstruction (to match pre-trailer commits)."""
+    if ev.kind == "prose_change":
+        return f"prose: revision {ev.revision_id}"
+    if ev.kind == "comment_create":
+        return f"comment: {ev.comment_id}"
+    if ev.kind == "comment_edit":
+        return f"comment edit: {ev.comment_id}"
+    if ev.kind == "comment_delete":
+        return f"comment delete: {ev.comment_id}"
+    if ev.kind == "reply_create":
+        return f"reply: {ev.comment_id} {ev.reply_id}"
+    if ev.kind == "reply_resolve":
+        return f"resolve: {ev.comment_id}"
+    if ev.kind == "reply_reopen":
+        return f"reopen: {ev.comment_id}"
+    return ev.kind
+
+
+def reconstruct_committed_set(events, cwd: Path) -> dict[str, str]:
+    """Recover {event_id: sha} from git history when the state file is gone.
+
+    Each replay commit carries a `Gdoc-event: <event_id>` trailer (exact
+    match). Commits predating that trailer are matched by
+    (commit_message_for(ev), author-date), which is unique in practice.
+    Only events present in `events` are returned.
+    """
+    import subprocess
+    from datetime import datetime
+
+    # sha \0 author-date \0 subject \0 trailer-value, one record per commit.
+    fmt = "%H%x00%aI%x00%s%x00%(trailers:key=Gdoc-event,valueonly)"
+    try:
+        out = subprocess.run(
+            ["git", "log", f"--format={fmt}"],
+            cwd=str(cwd), capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return {}
+    if out.returncode != 0:
+        return {}
+
+    by_event: dict[str, str] = {}                 # event_id -> sha (from trailer)
+    by_msg_date: dict[tuple[str, str], str] = {}  # (subject, iso) -> sha (fallback)
+    for line in out.stdout.split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("\x00")
+        if len(parts) < 4:
+            continue
+        sha, author_date, subject, trailer = parts[0], parts[1], parts[2], parts[3].strip()
+        if trailer:
+            by_event.setdefault(trailer, sha)
+        try:
+            iso = datetime.fromisoformat(author_date).isoformat()
+        except ValueError:
+            iso = author_date
+        by_msg_date.setdefault((subject, iso), sha)
+
+    result: dict[str, str] = {}
+    for ev in events:
+        if ev.event_id in by_event:
+            result[ev.event_id] = by_event[ev.event_id]
+            continue
+        key = (commit_message_for(ev), ev.timestamp.isoformat())
+        if key in by_msg_date:
+            result[ev.event_id] = by_msg_date[key]
+    return result
+
+
 @dataclass
 class EventState:
     id: str
