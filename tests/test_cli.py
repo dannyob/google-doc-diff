@@ -263,12 +263,24 @@ def test_legacy_state_is_migrated(tmp_path):
         cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
+            # --resume is required here: without it the command exits with an
+            # error ("replay history exists … use --resume") once it finds the
+            # migrated legacy state, so the migration path is only exercised
+            # under --resume.
             res = runner.invoke(cli, ["replay", _DOC, "--out", "x.md",
                                       "--no-commit", "--resume"])
         finally:
             os.chdir(cwd)
     assert res.exit_code == 0, res.output
     assert (tmp_path / ".gdoc-state" / f"{_DOC}.json").exists()
+    # CliRunner (click 8.x) folds stderr into res.output.  The migration notice
+    # ("migrated legacy ...") is printed via click.echo(..., err=True).
+    # We check for "migrated legacy" (two words) rather than just "migrated",
+    # because pytest embeds the test name in tmp_path and the path printed in
+    # the normal output already contains the substring "migrated" from
+    # "test_legacy_state_is_migrated0".  The two-word phrase only appears when
+    # the migration block actually ran.
+    assert "migrated legacy" in res.output
 
 
 def test_state_override_path(tmp_path):

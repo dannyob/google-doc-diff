@@ -301,12 +301,12 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
 
     existing = read_state(state_file)
     if existing is None and not state_override:
-        legacy = read_state(legacy_state_path(cwd))
+        legacy_path = legacy_state_path(cwd)
+        legacy = read_state(legacy_path)
         if legacy is not None and legacy.doc_id == doc_id:
             write_state(legacy, state_file)   # migrate into .gdoc-state/<doc_id>.json
             existing = legacy
-            click.echo(f"migrated legacy {legacy_state_path(cwd)} "
-                       f"-> {state_file}.", err=True)
+            click.echo(f"migrated legacy {legacy_path} -> {state_file}.", err=True)
     if restart:
         remove_state(state_file)
         existing = None
