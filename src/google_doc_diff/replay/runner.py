@@ -230,6 +230,7 @@ class ReplayRunner:
             author_email=email,
             timestamp=ev.timestamp,
             cwd=self.opt.cwd,
+            event_id=ev.event_id,
         )
 
 

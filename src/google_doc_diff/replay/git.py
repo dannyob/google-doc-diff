@@ -38,12 +38,19 @@ def commit(
     author_email: str,
     timestamp: datetime,
     cwd: Path | None = None,
+    event_id: str | None = None,
 ) -> str:
     """Create a commit with the given author identity + timestamp.
+
+    When event_id is given, append a `Gdoc-event: <event_id>` trailer so the
+    committed event is recoverable from `git log` without the state file.
 
     Returns the new commit's SHA.
     """
     iso = timestamp.isoformat()
+    full_message = message
+    if event_id:
+        full_message = f"{message}\n\nGdoc-event: {event_id}\n"
     env = {
         "GIT_AUTHOR_NAME": author_name,
         "GIT_AUTHOR_EMAIL": author_email,
@@ -53,7 +60,7 @@ def commit(
         "GIT_COMMITTER_DATE": iso,
     }
     _run(
-        ["git", "commit", "-m", message, "--allow-empty"],
+        ["git", "commit", "-m", full_message, "--allow-empty"],
         cwd=cwd, extra_env=env,
     )
     r = _run(["git", "rev-parse", "HEAD"], cwd=cwd, capture=True)

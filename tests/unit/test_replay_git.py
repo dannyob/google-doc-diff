@@ -58,3 +58,19 @@ def test_commit_records_author_and_timestamp(repo):
     assert name == "Alice"
     assert email == "alice@example.com"
     assert when_iso.startswith("2026-05-01T12:30:00")
+
+
+def test_commit_writes_gdoc_event_trailer(repo):
+    (repo / "x.md").write_text("hi")
+    gitwrap.add([repo / "x.md"], cwd=repo)
+    sha = gitwrap.commit(
+        "prose: revision 9245",
+        author_name="Alice", author_email="a@b",
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        cwd=repo, event_id="rev-9245",
+    )
+    trailer = subprocess.run(
+        ["git", "log", "-1", "--format=%(trailers:key=Gdoc-event,valueonly)", sha],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert trailer == "rev-9245"
