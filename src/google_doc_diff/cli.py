@@ -263,7 +263,7 @@ def revisions(doc, fmt):
 @click.option("--dry-run", is_flag=True,
               help="Walk the timeline; print events but don't write or commit.")
 @click.option("--resume", is_flag=True,
-              help="Continue an interrupted replay (.gdoc-replay-state.json).")
+              help="Continue an interrupted replay (.gdoc-state/<doc_id>.json).")
 @click.option("--restart", is_flag=True,
               help="Discard any existing replay state and start over.")
 @click.option("--state", "state_override", type=click.Path(path_type=Path),
@@ -334,7 +334,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     # If no state file but we're committing into an existing git history
     # (e.g. a fresh checkout), rebuild the committed-set from git so resume
     # continues instead of duplicating commits.
-    if existing is None and commit and (cwd / ".git").exists():
+    if existing is None and commit and not restart and (cwd / ".git").exists():
         from google_doc_diff.replay.state import reconstruct_committed_set
         recovered = reconstruct_committed_set(events, cwd, out_path)
         if recovered:
@@ -517,7 +517,7 @@ def _parse_duration(s: str):
 @cli.command()
 @click.argument("doc", required=False)
 @click.option("--out", type=click.Path(path_type=Path),
-              help="Output path (default: read from .gdoc-replay-state.json or "
+              help="Output path (default: read from .gdoc-state/<doc_id>.json or "
                    "fall back to <slug>.md).")
 @click.option("--extract-assets", is_flag=True)
 def fetch(doc, out, extract_assets):
@@ -530,8 +530,8 @@ def fetch(doc, out, extract_assets):
 
     DOC can be a doc ID, a URL, or a local .md file (in which case the
     doc id is read from its frontmatter and the file is refreshed in
-    place). With no DOC argument, reads the doc id and out path from
-    .gdoc-replay-state.json in the current directory.
+    place). Requires a DOC argument (a doc id, URL, or .md file whose
+    frontmatter doc id is used); per-doc state has no single cwd default.
     """
     from google_doc_diff.replay.state import default_state_path, read_state
 
