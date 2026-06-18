@@ -266,8 +266,11 @@ def revisions(doc, fmt):
               help="Continue an interrupted replay (.gdoc-replay-state.json).")
 @click.option("--restart", is_flag=True,
               help="Discard any existing replay state and start over.")
+@click.option("--state", "state_override", type=click.Path(path_type=Path),
+              help="Explicit replay-state file path "
+                   "(default: .gdoc-state/<doc_id>.json).")
 def replay(doc, since, until, out, commit, squash_by_author, include_comments,
-           extract_assets, dry_run, resume, restart):
+           extract_assets, dry_run, resume, restart, state_override):
     """Walk revisions + comment events and emit one .md (and optional commit) per event.
 
     DOC is a doc ID, a URL, or a local .md file (whose frontmatter doc_id
@@ -280,6 +283,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
         EventState,
         ReplayState,
         default_state_path,
+        legacy_state_path,
         read_state,
         remove_state,
         write_state,
@@ -293,9 +297,16 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     doc_id, path_hint = resolve_doc_target(doc)
     cwd = Path.cwd()
     out_path = out or path_hint or Path(_slugify(doc_id) + ".md")
-    state_file = default_state_path(doc_id, cwd)
+    state_file = state_override or default_state_path(doc_id, cwd)
 
     existing = read_state(state_file)
+    if existing is None and not state_override:
+        legacy = read_state(legacy_state_path(cwd))
+        if legacy is not None and legacy.doc_id == doc_id:
+            write_state(legacy, state_file)   # migrate into .gdoc-state/<doc_id>.json
+            existing = legacy
+            click.echo(f"migrated legacy {legacy_state_path(cwd)} "
+                       f"-> {state_file}.", err=True)
     if restart:
         remove_state(state_file)
         existing = None

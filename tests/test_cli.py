@@ -1,9 +1,13 @@
 """Tests for top-level CLI commands."""
 
+import json
+import os
 from datetime import UTC, datetime
+from unittest import mock
 
 import click
 import pytest
+from click.testing import CliRunner
 
 from google_doc_diff.cli import (
     _can_reconcile,
@@ -238,6 +242,54 @@ def test_reconcile_ignores_uncommitted_event_drift():
 
 
 # -- chip-counts attachment ---------------------------------------------------
+
+
+_DOC = "CCCCCCCCCCCCCCCCCCCCCCC"
+
+
+def test_legacy_state_is_migrated(tmp_path):
+    legacy = tmp_path / ".gdoc-replay-state.json"
+    legacy.write_text(json.dumps({
+        "doc_id": _DOC, "out_path": "x.md", "extract_assets": False,
+        "include_comments": True, "since": None, "until": None,
+        "timeline_hash": "h", "events": [],
+    }))
+    runner = CliRunner()
+    with mock.patch("google_doc_diff.cli.GdocAPI") as api_cls, \
+         mock.patch("google_doc_diff.cli.load_credentials", return_value=mock.Mock()):
+        api = api_cls.return_value
+        api.list_revisions.return_value = []
+        api.list_comments.return_value = []
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            res = runner.invoke(cli, ["replay", _DOC, "--out", "x.md",
+                                      "--no-commit", "--resume"])
+        finally:
+            os.chdir(cwd)
+    assert res.exit_code == 0, res.output
+    assert (tmp_path / ".gdoc-state" / f"{_DOC}.json").exists()
+
+
+def test_state_override_path(tmp_path):
+    custom = tmp_path / "custom-state.json"
+    runner = CliRunner()
+    with mock.patch("google_doc_diff.cli.GdocAPI") as api_cls, \
+         mock.patch("google_doc_diff.cli.load_credentials", return_value=mock.Mock()):
+        api = api_cls.return_value
+        api.list_revisions.return_value = []
+        api.list_comments.return_value = []
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            res = runner.invoke(cli, ["replay", _DOC, "--out", "x.md",
+                                      "--no-commit", "--state", str(custom)])
+        finally:
+            os.chdir(cwd)
+    assert res.exit_code == 0, res.output
+    assert custom.exists()
+    assert not (tmp_path / ".gdoc-state" / f"{_DOC}.json").exists()
+
 
 def test_attach_chip_counts_logs_on_failure(caplog):
     """A failed markdown-export fetch must be reported, not swallowed."""
