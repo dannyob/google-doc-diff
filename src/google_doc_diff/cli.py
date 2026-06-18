@@ -279,6 +279,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
     from google_doc_diff.replay.state import (
         EventState,
         ReplayState,
+        default_state_path,
         read_state,
         remove_state,
         write_state,
@@ -291,17 +292,19 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
 
     doc_id, path_hint = resolve_doc_target(doc)
     cwd = Path.cwd()
+    out_path = out or path_hint or Path(_slugify(doc_id) + ".md")
+    state_file = default_state_path(doc_id, cwd)
 
-    existing = read_state(cwd)
+    existing = read_state(state_file)
     if existing and not (resume or restart):
         click.echo(
-            f"{cwd}/.gdoc-replay-state.json exists. Use --resume to continue "
+            f"{state_file} exists. Use --resume to continue "
             "or --restart to discard.",
             err=True,
         )
         sys.exit(2)
     if restart:
-        remove_state(cwd)
+        remove_state(state_file)
         existing = None
 
     try:
@@ -334,8 +337,6 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
             )
             sys.exit(2)
 
-    out_path = out or path_hint or Path(_slugify(doc_id) + ".md")
-
     if commit:
         if not (cwd / ".git").exists():
             click.echo(
@@ -345,7 +346,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
             )
             sys.exit(2)
         # State file + the in-flight output .md are expected-dirty.
-        ignore = [".gdoc-replay-state.json"]
+        ignore = [".gdoc-state"]
         try:
             ignore.append(str(out_path.relative_to(cwd)))
         except ValueError:
@@ -390,7 +391,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
                 f"resuming: {new_count} new event(s) appeared upstream since "
                 "the last run."
             )
-        write_state(state, cwd)
+        write_state(state, state_file)
     else:
         state = ReplayState(
             doc_id=doc_id, out_path=str(out_path),
@@ -399,7 +400,7 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
             timeline_hash=new_hash,
             events=[EventState(**event_to_state_dict(e)) for e in events],
         )
-        write_state(state, cwd)
+        write_state(state, state_file)
 
     runner = ReplayRunner(api, doc_id, RunnerOptions(
         out_path=out_path, commit=commit, cwd=cwd,
@@ -430,13 +431,13 @@ def replay(doc, since, until, out, commit, squash_by_author, include_comments,
                 est.status = new_status
                 est.git_sha = None if skipped else sha
                 break
-        write_state(state, cwd)
+        write_state(state, state_file)
         marker = sha if isinstance(sha, str) else (sha or "(no commit)")
         click.echo(f"  {ev.kind:<14} {ev.timestamp.isoformat()}  {marker}")
 
     runner.execute(pending, on_event=_on_event)
     click.echo(
-        f"replayed {len(pending)} event(s); state: {cwd}/.gdoc-replay-state.json"
+        f"replayed {len(pending)} event(s); state: {state_file}"
     )
     if commit and pending:
         click.echo(
@@ -487,25 +488,21 @@ def fetch(doc, out, extract_assets):
     place). With no DOC argument, reads the doc id and out path from
     .gdoc-replay-state.json in the current directory.
     """
-    from google_doc_diff.replay.state import read_state
+    from google_doc_diff.replay.state import default_state_path, read_state
 
     cwd = Path.cwd()
-    state = read_state(cwd)
-    path_hint: Path | None = None
-    if doc:
-        doc_id, path_hint = resolve_doc_target(doc)
-    elif state:
-        doc_id = state.doc_id
-    else:
-        click.echo("no DOC argument given and no .gdoc-replay-state.json in cwd; "
-                   "pass a doc id, URL, or .md file.", err=True)
+    if not doc:
+        click.echo("fetch needs a doc id, URL, or .md path "
+                   "(per-doc state means there is no single default).", err=True)
         sys.exit(2)
+    doc_id, path_hint = resolve_doc_target(doc)
+    state = read_state(default_state_path(doc_id, cwd))
 
     if out:
         out_path = out
     elif path_hint:
         out_path = path_hint
-    elif state and not doc:
+    elif state:
         out_path = Path(state.out_path)
     else:
         out_path = Path(_slugify(doc_id) + ".md")

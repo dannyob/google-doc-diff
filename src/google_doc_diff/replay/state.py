@@ -1,4 +1,4 @@
-"""Read/write .gdoc-replay-state.json — replay's resumable progress file."""
+"""Read/write .gdoc-state/<doc_id>.json — replay's resumable progress file."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-STATE_FILENAME = ".gdoc-replay-state.json"
+STATE_DIRNAME = ".gdoc-state"
+LEGACY_STATE_FILENAME = ".gdoc-replay-state.json"
 
 
 @dataclass
@@ -44,24 +45,26 @@ class ReplayState:
         return cls(events=events, **d)
 
 
-def state_path(cwd: Path | None = None) -> Path:
-    return (cwd or Path.cwd()) / STATE_FILENAME
+def default_state_path(doc_id: str, cwd: Path | None = None) -> Path:
+    return (cwd or Path.cwd()) / STATE_DIRNAME / f"{doc_id}.json"
 
 
-def write_state(state: ReplayState, cwd: Path | None = None) -> Path:
-    p = state_path(cwd)
-    p.write_text(state.to_json())
-    return p
+def legacy_state_path(cwd: Path | None = None) -> Path:
+    return (cwd or Path.cwd()) / LEGACY_STATE_FILENAME
 
 
-def read_state(cwd: Path | None = None) -> ReplayState | None:
-    p = state_path(cwd)
-    if not p.exists():
+def write_state(state: ReplayState, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(state.to_json())
+    return path
+
+
+def read_state(path: Path) -> ReplayState | None:
+    if not path.exists():
         return None
-    return ReplayState.from_json(p.read_text())
+    return ReplayState.from_json(path.read_text())
 
 
-def remove_state(cwd: Path | None = None) -> None:
-    p = state_path(cwd)
-    if p.exists():
-        p.unlink()
+def remove_state(path: Path) -> None:
+    if path.exists():
+        path.unlink()
