@@ -113,6 +113,19 @@ gdoc auth login | logout | status
 A `<doc>` argument is a bare doc ID or any
 `https://docs.google.com/document/d/<id>/edit?...` URL.
 
+### Large multi-tab docs
+
+Google's `documents.get?includeTabsContent=true` returns HTTP 500 on large
+multi-tab documents, and there is no per-tab variant of that call. When `pull`
+hits that 500 it falls back to exporting each tab's markdown separately and
+re-attaching comments from the Drive API. Force it with `--per-tab`, or
+disable the fallback with `--no-per-tab`.
+
+The fallback is lossy: suggestions and paragraph ids are gone, comments are
+re-anchored by text matching, and no `.pull-state.json` is written, so `gdoc
+push` cannot three-way merge these files. It is also slow — the export
+endpoint rate-limits, so tabs are fetched one per second.
+
 ## Inline widgets
 
 Docs encodes some chips as structured types and others as opaque

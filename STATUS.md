@@ -89,6 +89,13 @@ needed for `/save` POSTs.
 Works for single-tab docs. Multi-tab would need per-tab merge passes
 and tab-level structural diff (added/removed/reordered tabs).
 
+### Per-tab pull fallback can't round-trip
+
+`pull`'s per-tab fallback (large multi-tab docs where the bulk fetch 500s)
+writes no `.pull-state.json`, so those files have no base state for `push`'s
+three-way merge — they're pull-only until the bulk fetch works or a per-tab
+merge path lands.
+
 ### Styling comparison
 
 Comparing our emitted HTML rendering against Google's native HTML
