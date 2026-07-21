@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import click
+from googleapiclient.errors import HttpError
 
 from google_doc_diff import __version__
 from google_doc_diff.api import GdocAPI, parse_doc_id
@@ -23,6 +24,7 @@ from google_doc_diff.auth import (
     run_oauth_flow,
 )
 from google_doc_diff.emit import emit_document_html, emit_document_md
+from google_doc_diff.per_tab import PerTabError, build_per_tab_document
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,10 @@ def auth_status_cmd():
 @click.option("--extract-assets", is_flag=True,
               help="Download images into <slug>.assets/ and rewrite links.")
 @click.option("--revision", help="Pull a specific revision id (Drive v2).")
+@click.option("--per-tab/--no-per-tab", "per_tab", default=None,
+              help="Pull each tab separately via markdown export. Default: "
+                   "auto, used only when the full-document fetch fails on a "
+                   "large doc. Lossy: no suggestions, no paragraph ids.")
 @click.option("--chip-counts/--no-chip-counts", default=True,
               help="Recover voting/reaction chip counts via an extra markdown export call.")
 @click.option("--kix-cookies", type=click.Path(path_type=Path),
@@ -144,7 +150,7 @@ def auth_status_cmd():
 @click.option("--readable", is_flag=True,
               help="Strip paragraph_id anchors for a human-readable view. "
                    "Disables surgical 3-way merge on a later `gdoc push`.")
-def pull(doc, out, html_out, extract_assets, revision, chip_counts, kix_cookies, kix_profile, no_kix, verbose, readable):
+def pull(doc, out, html_out, extract_assets, revision, per_tab, chip_counts, kix_cookies, kix_profile, no_kix, verbose, readable):
     """Pull a Google Doc and write Markdown (and optionally HTML).
 
     DOC is a doc ID, a Google Docs URL, or the path to an existing local
@@ -163,13 +169,44 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts, kix_cookies,
                    err=True)
         sys.exit(2)
 
-    try:
-        document, docs_json = _pull_rich_document_with_raw(api, doc_id, chip_counts=chip_counts)
-    except Exception as e:
-        click.echo(f"api: {e}", err=True)
-        sys.exit(2)
+    def _pull_per_tab():
+        return build_per_tab_document(
+            api, doc_id,
+            on_progress=lambda ref, n, total: click.echo(
+                f"  tab {n}/{total}: {ref.title}", err=True
+            ),
+        )
 
-    if not no_kix:
+    docs_json = None
+    try:
+        if per_tab:
+            document = _pull_per_tab()
+        else:
+            document, docs_json = _pull_rich_document_with_raw(
+                api, doc_id, chip_counts=chip_counts
+            )
+    except PerTabError as e:
+        click.echo(f"per-tab pull: {e}", err=True)
+        sys.exit(2)
+    except Exception as e:
+        if per_tab is False or not _is_bulk_tabs_500(e):
+            click.echo(f"api: {e}", err=True)
+            sys.exit(2)
+        click.echo(
+            "warning: the full-document fetch failed with HTTP 500, which "
+            "Google returns for large multi-tab docs. Falling back to per-tab "
+            "export -- fidelity is degraded: suggestions and paragraph ids are "
+            "lost, comments are re-anchored by text matching. This takes a few "
+            "minutes. Use --no-per-tab to fail instead.",
+            err=True,
+        )
+        try:
+            document = _pull_per_tab()
+        except PerTabError as e2:
+            click.echo(f"per-tab pull: {e2}", err=True)
+            sys.exit(2)
+
+    if not no_kix and docs_json is not None:
         _try_kix_enrichment(
             document, doc_id,
             kix_cookies=str(kix_cookies) if kix_cookies else None,
@@ -184,14 +221,22 @@ def pull(doc, out, html_out, extract_assets, revision, chip_counts, kix_cookies,
     click.echo(f"wrote {out_path}")
 
     # Write the merge-base sidecar so `gdoc push` (default = 3-way merge)
-    # has the doc's pull-time state to diff against.
-    state_path = out_path.with_suffix(out_path.suffix + ".pull-state.json")
-    state_path.write_text(json.dumps({
-        "doc_id": doc_id,
-        "revision_id": document.revision_id,
-        "docs_json": docs_json,
-        "base_md": md,
-    }, default=str) + "\n")
+    # has the doc's pull-time state to diff against. The per-tab path has no
+    # Docs JSON to record, so push cannot three-way merge these docs.
+    if docs_json is None:
+        click.echo(
+            "note: no .pull-state.json written (per-tab pull has no Docs JSON); "
+            "`gdoc push` cannot three-way merge this file.",
+            err=True,
+        )
+    else:
+        state_path = out_path.with_suffix(out_path.suffix + ".pull-state.json")
+        state_path.write_text(json.dumps({
+            "doc_id": doc_id,
+            "revision_id": document.revision_id,
+            "docs_json": docs_json,
+            "base_md": md,
+        }, default=str) + "\n")
 
     if html_out:
         html_path = Path(html_out)
@@ -664,6 +709,16 @@ def _pull_rich_document(api, doc_id, *, chip_counts=True):
     """
     document, _docs_json = _pull_rich_document_with_raw(api, doc_id, chip_counts=chip_counts)
     return document
+
+
+def _is_bulk_tabs_500(exc: BaseException) -> bool:
+    """True for the 500 that documents.get?includeTabsContent=true returns on
+    large multi-tab docs. There is no per-tab variant of that call and a field
+    mask does not help, so the only recourse is the per-tab export path."""
+    if not isinstance(exc, HttpError):
+        return False
+    status = getattr(exc, "status_code", None) or exc.resp.status
+    return status == 500
 
 
 def _pull_rich_document_with_raw(api, doc_id, *, chip_counts=True):
