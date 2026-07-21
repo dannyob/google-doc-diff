@@ -107,14 +107,22 @@ Two failure modes were observed and both are checked:
 Both abort rather than warn. A genuine pair of byte-identical tabs is rare, and
 a loud error naming the titles lets a human decide.
 
-## Open question to resolve before implementing
+## Resolved: `t.0` is an alias, not a 25th tab
 
 `t.0` exports a 6.7 KB intro ("FOC Weekly Business Review (WBR) / ORR") but does
-not appear among the 24 `ac` ops. It is either a 25th tab this design would
-silently drop, or an alias for content already covered. Resolve with a one-off
-coverage check — concatenate the enumerated tabs' exports and confirm they cover
-the whole-doc markdown export — before building on the assumption that the `ac`
-ops are the complete tab set.
+not appear among the 24 `ac` ops, raising the possibility of a tab this design
+would silently drop. Settled against the `/edit` payload, where content chunks
+are routed to a tab by `"nmr":["ksm","<tabId>"]`:
+
+- 24 tabs appear in `ac` ops; 24 tabs own content chunks; the two sets are
+  identical, with no member on either side only.
+- The intro text belongs to `t.90cn325iwsp4`, titled "[Updated] Template",
+  which is in the `ac` list.
+
+So the `ac` ops are the complete tab set, and `t.0` is an alias for a tab
+already covered. Enumeration must not add `t.0` on top of the `ac` list — doing
+so would duplicate that tab, which is precisely what the duplicate-hash
+safeguard is there to catch.
 
 ## Testing
 
