@@ -41,6 +41,20 @@ class AuthError(RuntimeError):
     """Raised for any auth setup or refresh failure."""
 
 
+def _read_oauth_client(path: Path) -> tuple[str, str]:
+    """Return (client_id, client_secret) from an OAuth client JSON.
+
+    Accepts the `installed` and `web` envelopes Google hands out, plus the
+    flat shape gdoc writes itself. A missing secret comes back as "" so
+    callers can report it rather than crashing on a KeyError.
+    """
+    client = json.loads(path.read_text())
+    inner = client.get("installed") or client.get("web") or client
+    if "client_id" not in inner:
+        raise AuthError(f"Unrecognized credentials.json shape at {path}")
+    return inner["client_id"], inner.get("client_secret", "")
+
+
 def load_credentials(
     creds_path: Path | None = None,
     token_path: Path | None = None,
@@ -67,18 +81,7 @@ def load_credentials(
             "already have gog configured)."
         )
 
-    client = json.loads(creds_path.read_text())
-    if "client_id" in client:
-        client_id = client["client_id"]
-        client_secret = client["client_secret"]
-    elif "installed" in client:
-        client_id = client["installed"]["client_id"]
-        client_secret = client["installed"]["client_secret"]
-    elif "web" in client:
-        client_id = client["web"]["client_id"]
-        client_secret = client["web"]["client_secret"]
-    else:
-        raise AuthError(f"Unrecognized credentials.json shape at {creds_path}")
+    client_id, client_secret = _read_oauth_client(creds_path)
 
     token = json.loads(token_path.read_text())
     info = {
@@ -131,35 +134,46 @@ def run_oauth_flow(
 def import_gog_token(
     gog_token_path: Path,
     gog_creds_path: Path | None = None,
+    client_secrets_path: Path | None = None,
     out_token_path: Path | None = None,
     out_creds_path: Path | None = None,
 ) -> None:
-    """Import a refresh-token + OAuth-client pair from gog.
+    """Import a refresh token from gog, paired with an OAuth client.
 
-    gog stores the OAuth client at
-    `~/Library/Application Support/gogcli/credentials.json` (or the platform
-    equivalent) and exports a token via `gog auth tokens export <email> --out
-    PATH`. This function copies both into our config dir.
+    gog exports a token via `gog auth tokens export <email> --out PATH`. The
+    OAuth client is a separate matter: recent gog keeps the client secret in
+    its keyring, so its own `credentials.json` carries only a `client_id`.
+    Pass `client_secrets_path` pointing at the JSON downloaded from the Cloud
+    Console for the same OAuth client that minted the token.
     """
-    if gog_creds_path is None:
-        gog_creds_path = (
-            Path.home() / "Library" / "Application Support" / "gogcli"
-            / "credentials.json"
-        )
     if not gog_token_path.exists():
         raise AuthError(
             f"gog token export not found at {gog_token_path}. Run "
             f"`gog auth tokens export <email> --out {gog_token_path}` first."
         )
-    if not gog_creds_path.exists():
-        raise AuthError(f"gog credentials not found at {gog_creds_path}")
+
+    client_path = client_secrets_path or gog_creds_path or (
+        Path.home() / "Library" / "Application Support" / "gogcli"
+        / "credentials.json"
+    )
+    if not client_path.exists():
+        raise AuthError(f"OAuth client not found at {client_path}")
+
+    client_id, client_secret = _read_oauth_client(client_path)
+    if not client_secret:
+        raise AuthError(
+            f"No client_secret in {client_path}. Recent gog stores the client "
+            "secret in its keyring, so its credentials.json cannot supply one. "
+            "Download the OAuth client (type 'Desktop app') for this account "
+            "from the Google Cloud Console and pass it with "
+            "--client-secrets-file."
+        )
 
     out_token_path = out_token_path or DEFAULT_TOKEN_PATH
     out_creds_path = out_creds_path or DEFAULT_CREDS_PATH
     out_token_path.parent.mkdir(parents=True, exist_ok=True)
 
     gog_token = json.loads(gog_token_path.read_text())
-    gog_creds = json.loads(gog_creds_path.read_text())
 
     out_token_path.write_text(json.dumps({
         "refresh_token": gog_token["refresh_token"],
@@ -168,8 +182,8 @@ def import_gog_token(
     out_token_path.chmod(0o600)
 
     out_creds_path.write_text(json.dumps({
-        "client_id": gog_creds["client_id"],
-        "client_secret": gog_creds["client_secret"],
+        "client_id": client_id,
+        "client_secret": client_secret,
     }))
     out_creds_path.chmod(0o600)
 

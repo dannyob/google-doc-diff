@@ -87,12 +87,18 @@ def auth():
 @click.option("--credentials-file", type=click.Path(path_type=Path),
               help="Path to OAuth client credentials.json (default: ~/.config/gdoc-diff/credentials.json)")
 @click.option("--import-gog-token", "gog_token", type=click.Path(path_type=Path),
-              help="Import a refresh token + client creds from gog auth tokens export <email>.")
-def auth_login(credentials_file, gog_token):
+              help="Import a refresh token from gog auth tokens export <email>.")
+@click.option("--client-secrets-file", "client_secrets", type=click.Path(path_type=Path),
+              help="OAuth client JSON downloaded from the Cloud Console. Required "
+                   "with --import-gog-token, since gog keeps its client secret in "
+                   "the keyring rather than in credentials.json.")
+def auth_login(credentials_file, gog_token, client_secrets):
     """Authorize gdoc; cache the refresh token."""
     try:
         if gog_token:
-            import_gog_token(gog_token_path=gog_token, out_creds_path=credentials_file)
+            import_gog_token(gog_token_path=gog_token,
+                             client_secrets_path=client_secrets,
+                             out_creds_path=credentials_file)
             click.echo("imported gog token to ~/.config/gdoc-diff/")
         else:
             run_oauth_flow(creds_path=credentials_file)
