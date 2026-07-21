@@ -36,19 +36,21 @@ def parse_tab_refs(html: str) -> list[TabRef]:
     for m in _AC_START.finditer(html):
         try:
             obj, _end = _DECODER.raw_decode(html, m.start())
-        except ValueError:
+            d = obj.get("d")
+            if not isinstance(d, list) or len(d) < 3:
+                continue
+            tab_id, title_field, index_field = d[0], d[1], d[2]
+            if not isinstance(tab_id, str) or not tab_id.startswith("t."):
+                continue
+            title = ""
+            if isinstance(title_field, list) and len(title_field) > 1:
+                title = str(title_field[1])
+            index = 0
+            if isinstance(index_field, list) and index_field:
+                index = int(index_field[0])
+        except (ValueError, TypeError):
+            # This format is reverse-engineered from one observed op shape;
+            # an op that doesn't match it should be skipped, not fatal.
             continue
-        d = obj.get("d")
-        if not isinstance(d, list) or len(d) < 3:
-            continue
-        tab_id, title_field, index_field = d[0], d[1], d[2]
-        if not isinstance(tab_id, str) or not tab_id.startswith("t."):
-            continue
-        title = ""
-        if isinstance(title_field, list) and len(title_field) > 1:
-            title = str(title_field[1])
-        index = 0
-        if isinstance(index_field, list) and index_field:
-            index = int(index_field[0])
         refs[tab_id] = TabRef(tab_id=tab_id, title=title, index=index)
     return sorted(refs.values(), key=lambda r: r.index)

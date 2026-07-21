@@ -189,21 +189,30 @@ def pull(doc, out, html_out, extract_assets, revision, per_tab, chip_counts, kix
         click.echo(f"per-tab pull: {e}", err=True)
         sys.exit(2)
     except Exception as e:
-        if per_tab is False or not _is_bulk_tabs_500(e):
+        # Only auto mode (per_tab is None) falls back on a 500 -- an explicit
+        # --per-tab or --no-per-tab always reports the failure as-is. A 500
+        # raised from inside the per-tab path itself (e.g. get_document_metadata)
+        # is not the bulk-tabs call and must not trigger a misleading "the
+        # full-document fetch failed" plus a wasted second per-tab pull.
+        if per_tab is not None or not _is_bulk_tabs_500(e):
             click.echo(f"api: {e}", err=True)
             sys.exit(2)
         click.echo(
             "warning: the full-document fetch failed with HTTP 500, which "
             "Google returns for large multi-tab docs. Falling back to per-tab "
             "export -- fidelity is degraded: suggestions and paragraph ids are "
-            "lost, comments are re-anchored by text matching. This takes a few "
-            "minutes. Use --no-per-tab to fail instead.",
+            "lost, comments are re-anchored by text matching, and nested tabs "
+            "are flattened. This takes a few minutes. Use --no-per-tab to fail "
+            "instead.",
             err=True,
         )
         try:
             document = _pull_per_tab()
         except PerTabError as e2:
             click.echo(f"per-tab pull: {e2}", err=True)
+            sys.exit(2)
+        except Exception as e2:
+            click.echo(f"api: {e2}", err=True)
             sys.exit(2)
 
     if not no_kix and docs_json is not None:
@@ -223,14 +232,23 @@ def pull(doc, out, html_out, extract_assets, revision, per_tab, chip_counts, kix
     # Write the merge-base sidecar so `gdoc push` (default = 3-way merge)
     # has the doc's pull-time state to diff against. The per-tab path has no
     # Docs JSON to record, so push cannot three-way merge these docs.
+    state_path = out_path.with_suffix(out_path.suffix + ".pull-state.json")
     if docs_json is None:
-        click.echo(
+        note = (
             "note: no .pull-state.json written (per-tab pull has no Docs JSON); "
-            "`gdoc push` cannot three-way merge this file.",
-            err=True,
+            "`gdoc push` cannot three-way merge this file."
         )
+        if state_path.exists():
+            # A sidecar from an earlier rich pull describes a different
+            # revision and fidelity level (paragraph ids the per-tab markdown
+            # doesn't have) than the file it would now sit beside -- leaving
+            # it in place would make a later `gdoc push` compute a mass
+            # rewrite against the live document. Don't delete the user's file.
+            stale_path = state_path.with_name(state_path.name + ".stale")
+            state_path.rename(stale_path)
+            note += f" Existing sidecar is stale for this pull; renamed to {stale_path.name}."
+        click.echo(note, err=True)
     else:
-        state_path = out_path.with_suffix(out_path.suffix + ".pull-state.json")
         state_path.write_text(json.dumps({
             "doc_id": doc_id,
             "revision_id": document.revision_id,

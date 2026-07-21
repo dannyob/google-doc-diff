@@ -118,6 +118,10 @@ def _tab_from_markdown(ref: TabRef, markdown: str, doc_id: str) -> Tab:
     build_from_google_md returns a whole Document with a single placeholder
     tab; we keep its blocks and restore the tab's real identity. The `t-`
     prefix matches from_docs_json's convention (kix/enrich strips it again).
+
+    Always level=0 with no parent/children: we have no confirmed op shape
+    for child tabs in the /edit payload, so nesting is flattened rather than
+    guessed at. `gdoc pull` surfaces this in its degraded-fidelity warning.
     """
     parsed = build_from_google_md(markdown, doc_id=doc_id)
     blocks = parsed.tabs[0].blocks if parsed.tabs else []

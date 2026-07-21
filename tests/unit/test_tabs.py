@@ -37,3 +37,12 @@ def test_malformed_ops_are_skipped():
 
 def test_no_tabs_returns_empty_list():
     assert parse_tab_refs("<html>nothing here</html>") == []
+
+
+def test_non_numeric_index_is_skipped_not_raised():
+    """int(index_field[0]) used to sit outside the try -- a non-numeric index
+    would raise ValueError out of the whole parse instead of just being
+    skipped, since this format is reverse-engineered and unconfirmed."""
+    bad = '{"ty":"ac","d":["t.aaa",[1,"Bad"],["x"]]}'
+    html = bad + _ac("t.bbb", "Good", 3)
+    assert parse_tab_refs(html) == [TabRef(tab_id="t.bbb", title="Good", index=3)]
