@@ -127,6 +127,41 @@ class GdocAPI:
         """Fetch a per-revision export URL (from revisions.list exportLinks)."""
         return self._with_backoff_http(self._do_get, export_url)
 
+    def fetch_edit_html(self, doc_id: str) -> str:
+        """Fetch the /edit payload, which carries the tab list.
+
+        Used by the per-tab pull path: `documents.get?includeTabsContent=true`
+        is the only API route to the tab list and it 500s on large docs, but
+        /edit serves 200 to the OAuth bearer alone (no browser cookies).
+        """
+        url = f"https://docs.google.com/document/d/{doc_id}/edit"
+        return self._with_backoff_http(self._do_get, url).decode("utf-8", errors="replace")
+
+    def export_tab_markdown(self, doc_id: str, tab_id: str) -> str:
+        """Export a single tab as markdown.
+
+        The `tab=` parameter is undocumented and could change. Note that an
+        unrecognised tab id does NOT error -- it returns the default tab's
+        content with status 200 -- so callers must check for duplicates.
+        """
+        url = (
+            f"https://docs.google.com/document/d/{doc_id}"
+            f"/export?format=md&tab={tab_id}"
+        )
+        return self._with_backoff_http(self._do_get, url).decode("utf-8", errors="replace")
+
+    def get_document_metadata(self, doc_id: str) -> dict:
+        """Fetch title/revisionId without tab content.
+
+        Returns in under a second on documents whose includeTabsContent=true
+        call 500s, so the per-tab path can still label its output correctly.
+        """
+        return self._with_backoff(
+            self._docs.documents().get,
+            documentId=doc_id,
+            includeTabsContent=False,
+        )
+
     def _do_get(self, url: str) -> bytes:
         headers = {
             "Authorization": f"Bearer {self._creds.token}",
