@@ -468,8 +468,16 @@ git commit -m "per-tab: reject silently-wrong export sets"
 ### Task 4: Assemble the multi-tab document
 
 **Files:**
+- Modify: `src/google_doc_diff/ast/from_docs_json.py` (rename `_build_comments` to `build_comments`)
 - Modify: `src/google_doc_diff/per_tab.py` (add the builder below the validator)
 - Modify: `tests/unit/test_per_tab.py` (append)
+
+First, make the comment builder public: `per_tab.py` needs it, and reaching
+across modules for a private name is not the way. Rename `_build_comments` to
+`build_comments` in `src/google_doc_diff/ast/from_docs_json.py:155` and update
+its callers in that file (`grep -n '_build_comments' src/ tests/` finds them
+all — there should be one definition and one call site). Run `pytest tests/ -q`
+after the rename to confirm nothing else referenced it.
 
 **Interfaces:**
 - Consumes: `parse_tab_refs`, `TabRef` (Task 1); `fetch_edit_html`, `export_tab_markdown`, `get_document_metadata` (Task 2); `validate_tab_exports`, `PerTabError` (Task 3).
@@ -599,7 +607,7 @@ from datetime import UTC, datetime
 
 from google_doc_diff.api import drive_url_for
 from google_doc_diff.ast.anchor_comments import anchor_comments
-from google_doc_diff.ast.from_docs_json import _build_comments
+from google_doc_diff.ast.from_docs_json import build_comments
 from google_doc_diff.ast.from_google_md import build_from_google_md
 from google_doc_diff.ast.nodes import Document, Tab
 from google_doc_diff.tabs import TabRef, parse_tab_refs
@@ -654,7 +662,7 @@ def build_per_tab_document(
         comments_preserved=True,
         suggestions_preserved=False,
         tabs=tabs,
-        comments=_build_comments(api.list_comments(doc_id)),
+        comments=build_comments(api.list_comments(doc_id)),
     )
     return anchor_comments(document)
 
