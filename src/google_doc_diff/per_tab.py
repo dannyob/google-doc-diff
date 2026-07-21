@@ -8,8 +8,15 @@ unaffected by document size.
 """
 
 import hashlib
+import time
+from datetime import UTC, datetime
 
-from google_doc_diff.tabs import TabRef
+from google_doc_diff.api import drive_url_for
+from google_doc_diff.ast.anchor_comments import anchor_comments
+from google_doc_diff.ast.from_docs_json import build_comments
+from google_doc_diff.ast.from_google_md import build_from_google_md
+from google_doc_diff.ast.nodes import Document, Tab
+from google_doc_diff.tabs import TabRef, parse_tab_refs
 
 
 class PerTabError(Exception):
@@ -52,3 +59,66 @@ def validate_tab_exports(exports: dict[str, str], refs: list[TabRef]) -> None:
                 "answers an unrecognised tab id with the default tab's content, "
                 "so this is either a stale tab id or two genuinely identical tabs."
             )
+
+
+def build_per_tab_document(
+    api,
+    doc_id: str,
+    *,
+    delay: float = 1.0,
+    sleep=time.sleep,
+    on_progress=None,
+) -> Document:
+    """Build a Document by exporting each tab separately.
+
+    Tabs are fetched sequentially with `delay` seconds between requests: the
+    export endpoint rate-limits hard enough that parallel fetching exhausts
+    the quota and poisons subsequent serial requests too.
+    """
+    refs = parse_tab_refs(api.fetch_edit_html(doc_id))
+    if not refs:
+        raise PerTabError(
+            f"no tabs found in the /edit payload for {doc_id}; "
+            "the document may have no tabs, or the payload format may have changed"
+        )
+
+    exports: dict[str, str] = {}
+    for n, ref in enumerate(refs, start=1):
+        if n > 1:
+            sleep(delay)
+        exports[ref.tab_id] = api.export_tab_markdown(doc_id, ref.tab_id)
+        if on_progress:
+            on_progress(ref, n, len(refs))
+
+    validate_tab_exports(exports, refs)
+
+    tabs = [_tab_from_markdown(ref, exports[ref.tab_id], doc_id) for ref in refs]
+
+    meta = api.get_document_metadata(doc_id)
+    document = Document(
+        doc_id=doc_id,
+        title=meta.get("title") or "(untitled)",
+        revision_id=meta.get("revisionId", ""),
+        drive_url=drive_url_for(doc_id),
+        captured_at=datetime.now(UTC),
+        schema_version=1,
+        last_modifying_user=None,
+        source_mode="pull",
+        comments_preserved=True,
+        suggestions_preserved=False,
+        tabs=tabs,
+        comments=build_comments(api.list_comments(doc_id)),
+    )
+    return anchor_comments(document)
+
+
+def _tab_from_markdown(ref: TabRef, markdown: str, doc_id: str) -> Tab:
+    """Parse one tab's exported markdown into a Tab node.
+
+    build_from_google_md returns a whole Document with a single placeholder
+    tab; we keep its blocks and restore the tab's real identity. The `t-`
+    prefix matches from_docs_json's convention (kix/enrich strips it again).
+    """
+    parsed = build_from_google_md(markdown, doc_id=doc_id)
+    blocks = parsed.tabs[0].blocks if parsed.tabs else []
+    return Tab(tab_id="t-" + ref.tab_id, title=ref.title, level=0, blocks=blocks)

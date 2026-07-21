@@ -87,7 +87,7 @@ def build_document(
         comments_preserved=True,
         suggestions_preserved=True,
         tabs=tabs,
-        comments=_build_comments(comments_json or []),
+        comments=build_comments(comments_json or []),
         suggestions=builder.suggestions,
         footnotes=builder.footnotes,
         named_styles=_build_named_styles(docs_json),
@@ -152,7 +152,7 @@ def _block_is_empty(runs) -> bool:
     return True
 
 
-def _build_comments(comments: list[dict]) -> dict[str, Comment]:
+def build_comments(comments: list[dict]) -> dict[str, Comment]:
     out: dict[str, Comment] = {}
     for c in comments:
         cid = "c-" + c["id"]
