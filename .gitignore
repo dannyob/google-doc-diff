@@ -12,3 +12,5 @@ htmlcov/
 .DS_Store
 .claude/
 kix_probes/data/
+# Rendered-preview build artifacts (regenerable, not source)
+.clearance-rendered-preview-*/
