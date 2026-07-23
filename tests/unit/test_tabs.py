@@ -46,3 +46,26 @@ def test_non_numeric_index_is_skipped_not_raised():
     bad = '{"ty":"ac","d":["t.aaa",[1,"Bad"],["x"]]}'
     html = bad + _ac("t.bbb", "Good", 3)
     assert parse_tab_refs(html) == [TabRef(tab_id="t.bbb", title="Good", index=3)]
+
+
+def test_genuinely_dropped_tab_is_reported_and_omitted():
+    """A t.-prefixed id with a non-numeric index is a real tab we failed to
+    parse -- it must be both left out of the returned refs and named in
+    `dropped`, so a silently-lost tab isn't mistaken for 'no tabs here'."""
+    bad = '{"ty":"ac","d":["t.aaa",[1,"Bad"],["x"]]}'
+    html = bad + _ac("t.bbb", "Good", 3)
+    dropped: list[str] = []
+    refs = parse_tab_refs(html, dropped=dropped)
+    assert refs == [TabRef(tab_id="t.bbb", title="Good", index=3)]
+    assert dropped == ["t.aaa"]
+
+
+def test_non_tab_malformed_op_is_not_counted_as_dropped():
+    """An op that isn't recognisably a tab at all (too short, or no
+    t.-prefixed id) is a different case from a dropped tab -- it must not
+    show up in `dropped`."""
+    html = '{"ty":"ac","d":["t.aaa"]}' + _ac("t.bbb", "Good", 3)
+    dropped: list[str] = []
+    refs = parse_tab_refs(html, dropped=dropped)
+    assert refs == [TabRef(tab_id="t.bbb", title="Good", index=3)]
+    assert dropped == []

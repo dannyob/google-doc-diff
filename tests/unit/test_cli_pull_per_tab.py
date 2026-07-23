@@ -140,3 +140,27 @@ def test_stale_sidecar_is_renamed_aside_not_deleted(cli_runner, temp_dir, minima
     assert stale.exists()
     assert stale.read_text() == '{"doc_id": "DOC123"}\n'
     assert "stale" in result.output.lower()
+
+
+def test_stale_sidecar_gets_a_numbered_suffix_when_one_already_exists(
+    cli_runner, temp_dir, minimal_document
+):
+    """Path.rename overwrites its destination on POSIX -- a second per-tab
+    pull must not clobber the .stale left by an earlier one."""
+    old_state = temp_dir / "doc.md.pull-state.json"
+    old_state.write_text('{"doc_id": "DOC123"}\n')
+    existing_stale = temp_dir / "doc.md.pull-state.json.stale"
+    existing_stale.write_text('{"doc_id": "PRIOR"}\n')
+
+    result, _rich, _per_tab, out = _run(
+        cli_runner, temp_dir, [], _http_error(500), minimal_document
+    )
+
+    assert result.exit_code == 0
+    assert not old_state.exists()
+    # The earlier .stale is untouched, byte-for-byte.
+    assert existing_stale.read_text() == '{"doc_id": "PRIOR"}\n'
+    new_stale = out.with_suffix(".md.pull-state.json.stale.1")
+    assert new_stale.exists()
+    assert new_stale.read_text() == '{"doc_id": "DOC123"}\n'
+    assert "stale.1" in result.output.lower()

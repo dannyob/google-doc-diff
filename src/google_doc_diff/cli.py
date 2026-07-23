@@ -175,6 +175,7 @@ def pull(doc, out, html_out, extract_assets, revision, per_tab, chip_counts, kix
             on_progress=lambda ref, n, total: click.echo(
                 f"  tab {n}/{total}: {ref.title}", err=True
             ),
+            on_notice=lambda msg: click.echo(f"  {msg}", err=True),
         )
 
     docs_json = None
@@ -245,6 +246,14 @@ def pull(doc, out, html_out, extract_assets, revision, per_tab, chip_counts, kix
             # it in place would make a later `gdoc push` compute a mass
             # rewrite against the live document. Don't delete the user's file.
             stale_path = state_path.with_name(state_path.name + ".stale")
+            if stale_path.exists():
+                # Path.rename overwrites the destination on POSIX -- an
+                # earlier .stale sidecar from a prior per-tab pull would be
+                # silently clobbered. Find the first free numbered suffix.
+                n = 1
+                while state_path.with_name(f"{state_path.name}.stale.{n}").exists():
+                    n += 1
+                stale_path = state_path.with_name(f"{state_path.name}.stale.{n}")
             state_path.rename(stale_path)
             note += f" Existing sidecar is stale for this pull; renamed to {stale_path.name}."
         click.echo(note, err=True)

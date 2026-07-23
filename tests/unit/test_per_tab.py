@@ -126,3 +126,18 @@ def test_duplicate_exports_abort_the_whole_pull():
     api = _FakeAPI({"t.aaa": "# Same\n", "t.bbb": "# Same\n"})
     with pytest.raises(PerTabError):
         build_per_tab_document(api, "DOC123", sleep=lambda _s: None)
+
+
+def test_on_notice_fires_for_a_dropped_tab_op():
+    api = _FakeAPI(_exports())
+    api.fetch_edit_html = lambda doc_id: (
+        EDIT_HTML + '{"ty":"ac","d":["t.ccc",[1,"Bad"],["x"]]}'
+    )
+    notices = []
+    doc = build_per_tab_document(
+        api, "DOC123", sleep=lambda _s: None, on_notice=notices.append
+    )
+    assert [t.title for t in doc.tabs] == ["Overview", "2026-05-06"]
+    assert len(notices) == 1
+    assert "skipped 1 unparseable tab op" in notices[0]
+    assert "t.ccc" in notices[0]

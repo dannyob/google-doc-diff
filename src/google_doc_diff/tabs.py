@@ -30,18 +30,27 @@ class TabRef:
     index: int  # display order
 
 
-def parse_tab_refs(html: str) -> list[TabRef]:
-    """Extract the document's tabs from an `/edit` payload, in display order."""
+def parse_tab_refs(html: str, *, dropped: list[str] | None = None) -> list[TabRef]:
+    """Extract the document's tabs from an `/edit` payload, in display order.
+
+    `dropped`, if given, collects the tab id of every op that was recognisably
+    a tab (a `t.`-prefixed id in a well-shaped triple) but whose title/index
+    could not be converted -- as opposed to ops that aren't tabs at all, which
+    are skipped silently.
+    """
     refs: dict[str, TabRef] = {}
     for m in _AC_START.finditer(html):
         try:
             obj, _end = _DECODER.raw_decode(html, m.start())
-            d = obj.get("d")
-            if not isinstance(d, list) or len(d) < 3:
-                continue
-            tab_id, title_field, index_field = d[0], d[1], d[2]
-            if not isinstance(tab_id, str) or not tab_id.startswith("t."):
-                continue
+        except ValueError:
+            continue
+        d = obj.get("d")
+        if not isinstance(d, list) or len(d) < 3:
+            continue
+        tab_id, title_field, index_field = d[0], d[1], d[2]
+        if not isinstance(tab_id, str) or not tab_id.startswith("t."):
+            continue
+        try:
             title = ""
             if isinstance(title_field, list) and len(title_field) > 1:
                 title = str(title_field[1])
@@ -50,7 +59,9 @@ def parse_tab_refs(html: str) -> list[TabRef]:
                 index = int(index_field[0])
         except (ValueError, TypeError):
             # This format is reverse-engineered from one observed op shape;
-            # an op that doesn't match it should be skipped, not fatal.
+            # a tab whose title/index doesn't match it is dropped, not fatal.
+            if dropped is not None:
+                dropped.append(tab_id)
             continue
         refs[tab_id] = TabRef(tab_id=tab_id, title=title, index=index)
     return sorted(refs.values(), key=lambda r: r.index)

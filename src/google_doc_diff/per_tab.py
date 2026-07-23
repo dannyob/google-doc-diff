@@ -68,6 +68,7 @@ def build_per_tab_document(
     delay: float = 1.0,
     sleep=time.sleep,
     on_progress=None,
+    on_notice=None,
 ) -> Document:
     """Build a Document by exporting each tab separately.
 
@@ -75,12 +76,15 @@ def build_per_tab_document(
     export endpoint rate-limits hard enough that parallel fetching exhausts
     the quota and poisons subsequent serial requests too.
     """
-    refs = parse_tab_refs(api.fetch_edit_html(doc_id))
+    dropped: list[str] = []
+    refs = parse_tab_refs(api.fetch_edit_html(doc_id), dropped=dropped)
     if not refs:
         raise PerTabError(
             f"no tabs found in the /edit payload for {doc_id}; "
             "the document may have no tabs, or the payload format may have changed"
         )
+    if dropped and on_notice:
+        on_notice(f"skipped {len(dropped)} unparseable tab op(s): {', '.join(dropped)}")
 
     exports: dict[str, str] = {}
     for n, ref in enumerate(refs, start=1):
