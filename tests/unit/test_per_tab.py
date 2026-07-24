@@ -34,6 +34,18 @@ def test_markdown_containing_inline_html_is_not_mistaken_for_an_error_page():
     )
 
 
+def test_several_empty_tabs_do_not_collide():
+    """Empty tabs are ordinary -- a parent tab that only contains child tabs
+    has no body of its own. The collision check is looking for exports that
+    silently fell back to the *default tab's* content, which is never empty,
+    so empty exports are not evidence of that and must not abort the pull."""
+    validate_tab_exports({"t.aaa": "", "t.bbb": ""}, REFS)
+
+
+def test_whitespace_only_exports_do_not_collide():
+    validate_tab_exports({"t.aaa": "\n", "t.bbb": "  \n"}, REFS)
+
+
 def _tab_json(tab_id, title, index, children=()):
     return {
         "tabProperties": {"tabId": tab_id, "title": title, "index": index},

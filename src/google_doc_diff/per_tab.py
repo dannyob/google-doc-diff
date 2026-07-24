@@ -53,6 +53,13 @@ def validate_tab_exports(exports: dict[str, str], refs: list[TabRef]) -> None:
 
     by_hash: dict[str, list[str]] = {}
     for tab_id, text in exports.items():
+        # Empty tabs are ordinary -- a tab that only holds child tabs exports
+        # nothing at all -- and they are not the failure this check is for:
+        # an unrecognised tab id comes back with the *default tab's* content,
+        # not with nothing. Hashing them together would abort every document
+        # with two empty tabs in it.
+        if not text.strip():
+            continue
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         by_hash.setdefault(digest, []).append(tab_id)
 
