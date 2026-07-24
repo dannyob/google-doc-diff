@@ -2,10 +2,15 @@ from google_doc_diff.cli import _strip_volatile_frontmatter
 from google_doc_diff.emit.markdown import emit_document_md
 from google_doc_diff.per_tab import build_per_tab_document
 
-EDIT_HTML = (
-    '{"ty":"ac","d":["t.aaa",[1,"Overview"],[0]]}'
-    '{"ty":"ac","d":["t.bbb",[1,"2026-05-06"],[1]]}'
-)
+
+def _tab_json(tab_id, title, index, children=()):
+    return {
+        "tabProperties": {"tabId": tab_id, "title": title, "index": index},
+        "childTabs": list(children),
+    }
+
+
+TABS = [_tab_json("t.aaa", "Overview", 0), _tab_json("t.bbb", "2026-05-06", 1)]
 
 EXPORTS = {
     "t.aaa": "# Overview\n\nIntro prose.\n",
@@ -23,8 +28,11 @@ COMMENTS = [{
 
 
 class _FakeAPI:
-    def fetch_edit_html(self, doc_id):
-        return EDIT_HTML
+    def __init__(self, tabs=None):
+        self._tabs = TABS if tabs is None else tabs
+
+    def list_tabs(self, doc_id):
+        return self._tabs
 
     def export_tab_markdown(self, doc_id, tab_id):
         return EXPORTS[tab_id]
@@ -43,6 +51,22 @@ def test_per_tab_pull_emits_one_fenced_div_per_tab_in_order():
     assert md.index('data-title="Overview"') < md.index('data-title="2026-05-06"')
     assert md.count("::: {.gd-tab") == 2
     assert "Intro prose." in md and "Week prose worth quoting." in md
+
+
+def test_child_tabs_emit_nested_under_their_parent():
+    """The /edit scraper flattened nesting, so a sub-tab emitted as a sibling.
+    The masked API call knows better, and emit renders the tree."""
+    nested = [_tab_json("t.aaa", "Overview", 0, [_tab_json("t.bbb", "2026-05-06", 0)])]
+    md = emit_document_md(
+        build_per_tab_document(_FakeAPI(nested), "DOC123", sleep=lambda _s: None)
+    )
+
+    parent = md.index('data-title="Overview"')
+    child = md.index('data-title="2026-05-06"')
+    assert parent < child
+    assert md.count("::: {.gd-tab") == 2
+    # the child's fence must close before the parent's
+    assert md.rindex(":::") > child
 
 
 def test_emission_is_deterministic():

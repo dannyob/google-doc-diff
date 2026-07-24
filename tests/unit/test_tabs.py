@@ -1,71 +1,83 @@
-from google_doc_diff.tabs import TabRef, parse_tab_refs
+"""Tab enumeration from the Docs API `tabs(tabProperties,childTabs(...))` mask.
+
+The tab list used to be scraped out of the `/edit` payload's reverse-engineered
+`{"ty":"ac",...}` ops. `documents.get` with a field mask returns the same thing
+through the public API, and unlike the scraper it carries child tabs.
+"""
+
+from google_doc_diff.tabs import TabRef, tab_refs_from_json, walk_tab_refs
 
 
-def _ac(tab_id, title, index):
-    return '{"ty":"ac","d":["%s",[1,"%s"],[%d]]}' % (tab_id, title, index)  # noqa: UP031
+def _tab(tab_id, title, index, children=()):
+    return {
+        "tabProperties": {"tabId": tab_id, "title": title, "index": index},
+        "childTabs": list(children),
+    }
 
 
-def test_parses_id_title_and_order():
-    html = "junk" + _ac("t.bbb", "2026-05-06", 1) + "junk" + _ac("t.aaa", "Overview", 0)
-    assert parse_tab_refs(html) == [
+def test_returns_top_level_tabs_in_index_order():
+    tabs = [_tab("t.bbb", "2026-05-06", 1), _tab("t.aaa", "Overview", 0)]
+    assert tab_refs_from_json(tabs) == [
         TabRef(tab_id="t.aaa", title="Overview", index=0),
         TabRef(tab_id="t.bbb", title="2026-05-06", index=1),
     ]
 
 
-def test_unescapes_json_in_titles():
-    html = _ac("t.aaa", "WBR \\u0026 ORR", 0)
-    assert parse_tab_refs(html)[0].title == "WBR & ORR"
+def test_child_tabs_carry_level_and_parent():
+    tabs = [_tab("t.aaa", "Track", 0, [_tab("t.bbb", "Session", 0)])]
+    (parent,) = tab_refs_from_json(tabs)
+
+    assert parent.level == 0
+    assert parent.parent_tab_id is None
+    (child,) = parent.children
+    assert child == TabRef(
+        tab_id="t.bbb", title="Session", index=0, level=1, parent_tab_id="t.aaa"
+    )
 
 
-def test_title_containing_bracket_brace_is_not_truncated():
-    html = _ac("t.aaa", "weird]} title", 0)
-    assert parse_tab_refs(html)[0].title == "weird]} title"
+def test_nesting_is_not_depth_limited():
+    tabs = [_tab("t.a", "A", 0, [_tab("t.b", "B", 0, [_tab("t.c", "C", 0)])])]
+    (a,) = tab_refs_from_json(tabs)
+    (b,) = a.children
+    (c,) = b.children
+    assert (a.level, b.level, c.level) == (0, 1, 2)
+    assert c.parent_tab_id == "t.b"
 
 
-def test_duplicate_ops_for_one_tab_collapse():
-    html = _ac("t.aaa", "Old", 0) + _ac("t.aaa", "New", 0)
-    refs = parse_tab_refs(html)
-    assert len(refs) == 1
-    assert refs[0].title == "New"
+def test_child_tabs_are_ordered_within_their_parent():
+    tabs = [_tab("t.a", "A", 0, [_tab("t.c", "C", 1), _tab("t.b", "B", 0)])]
+    (a,) = tab_refs_from_json(tabs)
+    assert [c.title for c in a.children] == ["B", "C"]
 
 
-def test_malformed_ops_are_skipped():
-    html = '{"ty":"ac","d":["t.aaa"]}' + '{"ty":"ac","d":[' + _ac("t.bbb", "Good", 3)
-    assert parse_tab_refs(html) == [TabRef(tab_id="t.bbb", title="Good", index=3)]
+def test_walk_yields_depth_first_document_order():
+    tabs = [
+        _tab("t.a", "A", 0, [_tab("t.a1", "A1", 0), _tab("t.a2", "A2", 1)]),
+        _tab("t.b", "B", 1),
+    ]
+    refs = tab_refs_from_json(tabs)
+    assert [r.tab_id for r in walk_tab_refs(refs)] == [
+        "t.a", "t.a1", "t.a2", "t.b",
+    ]
+
+
+def test_missing_index_falls_back_to_document_order():
+    """`tabProperties.index` is omitted for index 0 by some callers; a tab
+    without one must keep its position rather than sorting to the front."""
+    tabs = [
+        {"tabProperties": {"tabId": "t.a", "title": "A"}},
+        {"tabProperties": {"tabId": "t.b", "title": "B", "index": 1}},
+    ]
+    assert [r.tab_id for r in tab_refs_from_json(tabs)] == ["t.a", "t.b"]
 
 
 def test_no_tabs_returns_empty_list():
-    assert parse_tab_refs("<html>nothing here</html>") == []
+    assert tab_refs_from_json([]) == []
+    assert tab_refs_from_json(None) == []
 
 
-def test_non_numeric_index_is_skipped_not_raised():
-    """int(index_field[0]) used to sit outside the try -- a non-numeric index
-    would raise ValueError out of the whole parse instead of just being
-    skipped, since this format is reverse-engineered and unconfirmed."""
-    bad = '{"ty":"ac","d":["t.aaa",[1,"Bad"],["x"]]}'
-    html = bad + _ac("t.bbb", "Good", 3)
-    assert parse_tab_refs(html) == [TabRef(tab_id="t.bbb", title="Good", index=3)]
-
-
-def test_genuinely_dropped_tab_is_reported_and_omitted():
-    """A t.-prefixed id with a non-numeric index is a real tab we failed to
-    parse -- it must be both left out of the returned refs and named in
-    `dropped`, so a silently-lost tab isn't mistaken for 'no tabs here'."""
-    bad = '{"ty":"ac","d":["t.aaa",[1,"Bad"],["x"]]}'
-    html = bad + _ac("t.bbb", "Good", 3)
-    dropped: list[str] = []
-    refs = parse_tab_refs(html, dropped=dropped)
-    assert refs == [TabRef(tab_id="t.bbb", title="Good", index=3)]
-    assert dropped == ["t.aaa"]
-
-
-def test_non_tab_malformed_op_is_not_counted_as_dropped():
-    """An op that isn't recognisably a tab at all (too short, or no
-    t.-prefixed id) is a different case from a dropped tab -- it must not
-    show up in `dropped`."""
-    html = '{"ty":"ac","d":["t.aaa"]}' + _ac("t.bbb", "Good", 3)
-    dropped: list[str] = []
-    refs = parse_tab_refs(html, dropped=dropped)
-    assert refs == [TabRef(tab_id="t.bbb", title="Good", index=3)]
-    assert dropped == []
+def test_tab_without_an_id_is_skipped():
+    """A tab we cannot address is useless to the per-tab export path -- it
+    must not become a ref with an empty id that exports the default tab."""
+    tabs = [{"tabProperties": {"title": "No id"}}, _tab("t.a", "A", 0)]
+    assert [r.tab_id for r in tab_refs_from_json(tabs)] == ["t.a"]

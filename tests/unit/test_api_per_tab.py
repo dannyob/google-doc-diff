@@ -12,13 +12,58 @@ def _api_without_building_clients() -> GdocAPI:
     return api
 
 
-def test_fetch_edit_html_hits_the_edit_url_and_decodes():
+def _api_with_stubbed_backoff(response):
+    """GdocAPI whose _with_backoff returns `response` and records its kwargs."""
     api = _api_without_building_clients()
-    seen = []
-    api._do_get = lambda url: seen.append(url) or b"<html>hi</html>"
+    captured = {}
 
-    assert api.fetch_edit_html("DOC123") == "<html>hi</html>"
-    assert seen == ["https://docs.google.com/document/d/DOC123/edit"]
+    def fake_backoff(factory, **kwargs):
+        captured.update(kwargs)
+        return response
+
+    class _FakeDocs:
+        def documents(self):
+            return self
+
+        def get(self, **kwargs):  # never executed; _with_backoff is stubbed
+            raise AssertionError("should go through _with_backoff")
+
+    api._docs = _FakeDocs()
+    api._with_backoff = fake_backoff
+    return api, captured
+
+
+def test_list_tabs_returns_the_tabs_field():
+    tabs = [{"tabProperties": {"tabId": "t.a", "title": "A", "index": 0}}]
+    api, _captured = _api_with_stubbed_backoff({"tabs": tabs})
+    assert api.list_tabs("DOC123") == tabs
+
+
+def test_list_tabs_masks_the_response_to_tab_properties():
+    """Without a mask this is the full-content call the per-tab path exists to
+    avoid; the mask must ask for tabProperties and nothing else."""
+    api, captured = _api_with_stubbed_backoff({"tabs": []})
+    api.list_tabs("DOC123")
+
+    assert captured["documentId"] == "DOC123"
+    assert captured["includeTabsContent"] is True
+    fields = captured["fields"]
+    assert fields.startswith("tabs(")
+    assert "documentTab" not in fields
+    assert "body" not in fields
+
+
+def test_list_tabs_mask_descends_through_child_tabs():
+    """Child tabs only appear if the mask names them at each level, so the
+    mask must nest deeper than Docs allows tabs to nest (3)."""
+    api, captured = _api_with_stubbed_backoff({"tabs": []})
+    api.list_tabs("DOC123")
+    assert captured["fields"].count("childTabs") >= 3
+
+
+def test_list_tabs_on_a_document_without_tabs_returns_empty():
+    api, _captured = _api_with_stubbed_backoff({})
+    assert api.list_tabs("DOC123") == []
 
 
 def test_export_tab_markdown_passes_the_tab_parameter():

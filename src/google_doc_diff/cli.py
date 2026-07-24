@@ -202,9 +202,8 @@ def pull(doc, out, html_out, extract_assets, revision, per_tab, chip_counts, kix
             "warning: the full-document fetch failed with HTTP 500, which "
             "Google returns for large multi-tab docs. Falling back to per-tab "
             "export -- fidelity is degraded: suggestions and paragraph ids are "
-            "lost, comments are re-anchored by text matching, and nested tabs "
-            "are flattened. This takes a few minutes. Use --no-per-tab to fail "
-            "instead.",
+            "lost, and comments are re-anchored by text matching. This takes a "
+            "few minutes. Use --no-per-tab to fail instead.",
             err=True,
         )
         try:

@@ -34,20 +34,25 @@ def test_markdown_containing_inline_html_is_not_mistaken_for_an_error_page():
     )
 
 
-EDIT_HTML = (
-    '{"ty":"ac","d":["t.aaa",[1,"Overview"],[0]]}'
-    '{"ty":"ac","d":["t.bbb",[1,"2026-05-06"],[1]]}'
-)
+def _tab_json(tab_id, title, index, children=()):
+    return {
+        "tabProperties": {"tabId": tab_id, "title": title, "index": index},
+        "childTabs": list(children),
+    }
+
+
+TABS_JSON = [_tab_json("t.aaa", "Overview", 0), _tab_json("t.bbb", "2026-05-06", 1)]
 
 
 class _FakeAPI:
-    def __init__(self, exports, comments=()):
+    def __init__(self, exports, comments=(), tabs=None):
         self._exports = exports
         self._comments = list(comments)
+        self._tabs = TABS_JSON if tabs is None else tabs
         self.export_calls = []
 
-    def fetch_edit_html(self, doc_id):
-        return EDIT_HTML
+    def list_tabs(self, doc_id):
+        return self._tabs
 
     def export_tab_markdown(self, doc_id, tab_id):
         self.export_calls.append(tab_id)
@@ -70,6 +75,30 @@ def test_builds_one_tab_per_ref_in_order_with_prefixed_ids():
 
     assert [t.title for t in doc.tabs] == ["Overview", "2026-05-06"]
     assert [t.tab_id for t in doc.tabs] == ["t-t.aaa", "t-t.bbb"]
+    assert api.export_calls == ["t.aaa", "t.bbb"]
+
+
+def test_child_tabs_are_nested_not_flattened():
+    """The /edit scraper could not see child tabs, so every tab came back at
+    level 0. The masked API call carries the tree, and emit walks it."""
+    tabs = [_tab_json("t.aaa", "Track", 0, [_tab_json("t.bbb", "Session", 0)])]
+    api = _FakeAPI(_exports(), tabs=tabs)
+    doc = build_per_tab_document(api, "DOC123", sleep=lambda _s: None)
+
+    assert len(doc.tabs) == 1
+    parent = doc.tabs[0]
+    assert parent.level == 0 and parent.parent_tab_id is None
+    (child,) = parent.children
+    assert child.title == "Session"
+    assert child.level == 1
+    assert child.parent_tab_id == "t-t.aaa"
+    assert child.tab_id == "t-t.bbb"
+
+
+def test_child_tabs_are_exported_too():
+    tabs = [_tab_json("t.aaa", "Track", 0, [_tab_json("t.bbb", "Session", 0)])]
+    api = _FakeAPI(_exports(), tabs=tabs)
+    build_per_tab_document(api, "DOC123", sleep=lambda _s: None)
     assert api.export_calls == ["t.aaa", "t.bbb"]
 
 
@@ -116,8 +145,7 @@ def test_delays_between_exports_but_not_before_the_first():
 
 
 def test_no_tabs_found_is_an_error():
-    api = _FakeAPI(_exports())
-    api.fetch_edit_html = lambda doc_id: "<html>no ops here</html>"
+    api = _FakeAPI(_exports(), tabs=[])
     with pytest.raises(PerTabError, match="no tabs"):
         build_per_tab_document(api, "DOC123", sleep=lambda _s: None)
 
@@ -128,16 +156,17 @@ def test_duplicate_exports_abort_the_whole_pull():
         build_per_tab_document(api, "DOC123", sleep=lambda _s: None)
 
 
-def test_on_notice_fires_for_a_dropped_tab_op():
-    api = _FakeAPI(_exports())
-    api.fetch_edit_html = lambda doc_id: (
-        EDIT_HTML + '{"ty":"ac","d":["t.ccc",[1,"Bad"],["x"]]}'
-    )
+def test_on_notice_fires_for_a_tab_with_no_id():
+    """A tab the API returned without a tabId cannot be exported. It is left
+    out rather than exported as an empty id (which the export endpoint would
+    answer with the default tab's content), and the loss is reported."""
+    tabs = [*TABS_JSON, {"tabProperties": {"title": "Nameless"}}]
+    api = _FakeAPI(_exports(), tabs=tabs)
     notices = []
     doc = build_per_tab_document(
         api, "DOC123", sleep=lambda _s: None, on_notice=notices.append
     )
     assert [t.title for t in doc.tabs] == ["Overview", "2026-05-06"]
     assert len(notices) == 1
-    assert "skipped 1 unparseable tab op" in notices[0]
-    assert "t.ccc" in notices[0]
+    assert "skipped 1 tab" in notices[0]
+    assert "Nameless" in notices[0]

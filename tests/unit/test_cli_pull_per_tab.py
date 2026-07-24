@@ -71,12 +71,23 @@ def test_no_per_tab_flag_lets_the_500_fail(cli_runner, temp_dir, minimal_documen
     assert not per_tab.called
 
 
-def test_fallback_warning_mentions_flattened_nested_tabs(cli_runner, temp_dir, minimal_document):
+def test_fallback_warning_names_what_is_lost(cli_runner, temp_dir, minimal_document):
     result, _rich, _per_tab, _out = _run(
         cli_runner, temp_dir, [], _http_error(500), minimal_document
     )
-    assert "nested tabs" in result.output.lower()
-    assert "flatten" in result.output.lower()
+    assert "suggestions" in result.output.lower()
+    assert "paragraph ids" in result.output.lower()
+
+
+def test_fallback_warning_no_longer_claims_tabs_are_flattened(
+    cli_runner, temp_dir, minimal_document
+):
+    """The tab list now comes from a masked documents.get, which carries the
+    child-tab tree, so the old flattening caveat would be a false warning."""
+    result, _rich, _per_tab, _out = _run(
+        cli_runner, temp_dir, [], _http_error(500), minimal_document
+    )
+    assert "flatten" not in result.output.lower()
 
 
 def _run_per_tab_raises(runner, tmp_path, args, rich_side_effect, per_tab_side_effect):

@@ -123,10 +123,10 @@ disable the fallback with `--no-per-tab`.
 
 The fallback is lossy: suggestions and paragraph ids are gone, comments are
 re-anchored by text matching, and no `.pull-state.json` is written, so `gdoc
-push` cannot three-way merge these files. Nested tabs are also flattened —
-the per-tab export path has no confirmed reverse-engineered op shape for
-child tabs, so every tab comes back at the top level. It is also slow — the
-export endpoint rate-limits, so tabs are fetched one per second.
+push` cannot three-way merge these files. It is also slow — the export
+endpoint rate-limits, so tabs are fetched one per second. Tab structure does
+survive: the tab list comes from `documents.get` under a
+`tabs(tabProperties,childTabs(...))` field mask, so child tabs stay nested.
 
 ## Inline widgets
 

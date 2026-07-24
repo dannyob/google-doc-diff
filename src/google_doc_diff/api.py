@@ -32,6 +32,22 @@ class APIError(RuntimeError):
 _BARE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 
 
+def _tab_properties_mask(depth: int) -> str:
+    """Field mask selecting tab identity `depth` levels down.
+
+    A mask cannot recurse, so each level of `childTabs` has to be spelled out.
+    Docs caps tab nesting at 3; the extra levels are headroom, and cost nothing
+    beyond mask length -- naming a level a document doesn't use is not an error.
+    """
+    inner = "tabProperties"
+    for _ in range(depth - 1):
+        inner = f"tabProperties,childTabs({inner})"
+    return f"tabs({inner})"
+
+
+_TAB_PROPERTIES_MASK = _tab_properties_mask(6)
+
+
 def drive_url_for(doc_id: str) -> str:
     """Canonical Drive URL for a Google Doc by ID. Inverse of `parse_doc_id`."""
     return f"https://docs.google.com/document/d/{doc_id}/edit"
@@ -127,15 +143,21 @@ class GdocAPI:
         """Fetch a per-revision export URL (from revisions.list exportLinks)."""
         return self._with_backoff_http(self._do_get, export_url)
 
-    def fetch_edit_html(self, doc_id: str) -> str:
-        """Fetch the /edit payload, which carries the tab list.
+    def list_tabs(self, doc_id: str) -> list[dict]:
+        """Fetch the tab tree without any tab content.
 
-        Used by the per-tab pull path: `documents.get?includeTabsContent=true`
-        is the only API route to the tab list and it 500s on large docs, but
-        /edit serves 200 to the OAuth bearer alone (no browser cookies).
+        `includeTabsContent=True` is required for the `tabs` field to be
+        populated at all -- it is absent from an unmasked metadata call -- but
+        the field mask keeps the response to tab identity, which is what makes
+        this usable on documents too large to fetch whole.
         """
-        url = f"https://docs.google.com/document/d/{doc_id}/edit"
-        return self._with_backoff_http(self._do_get, url).decode("utf-8", errors="replace")
+        resp = self._with_backoff(
+            self._docs.documents().get,
+            documentId=doc_id,
+            includeTabsContent=True,
+            fields=_TAB_PROPERTIES_MASK,
+        )
+        return resp.get("tabs") or []
 
     def export_tab_markdown(self, doc_id: str, tab_id: str) -> str:
         """Export a single tab as markdown.

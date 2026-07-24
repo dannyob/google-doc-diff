@@ -5,6 +5,11 @@ lossy by necessity: Google exposes no high-fidelity route to these documents
 at any granularity, so content arrives as markdown (no suggestions, no stable
 paragraph ids) and comments are re-attached from the Drive API, which is
 unaffected by document size.
+
+The loss is confined to content. Tab identity and the child-tab tree come from
+`api.list_tabs`, a field-masked `documents.get` that stays cheap on documents
+too large to fetch whole, so the emitted tab structure matches the ordinary
+pull path exactly.
 """
 
 import hashlib
@@ -16,7 +21,7 @@ from google_doc_diff.ast.anchor_comments import anchor_comments
 from google_doc_diff.ast.from_docs_json import build_comments
 from google_doc_diff.ast.from_google_md import build_from_google_md
 from google_doc_diff.ast.nodes import Document, Tab
-from google_doc_diff.tabs import TabRef, parse_tab_refs
+from google_doc_diff.tabs import TabRef, tab_refs_from_json, walk_tab_refs
 
 
 class PerTabError(Exception):
@@ -76,27 +81,29 @@ def build_per_tab_document(
     export endpoint rate-limits hard enough that parallel fetching exhausts
     the quota and poisons subsequent serial requests too.
     """
-    dropped: list[str] = []
-    refs = parse_tab_refs(api.fetch_edit_html(doc_id), dropped=dropped)
+    skipped: list[str] = []
+    refs = tab_refs_from_json(api.list_tabs(doc_id), skipped=skipped)
     if not refs:
         raise PerTabError(
-            f"no tabs found in the /edit payload for {doc_id}; "
-            "the document may have no tabs, or the payload format may have changed"
+            f"no tabs reported for {doc_id}; the document may have no tabs, "
+            "in which case the ordinary pull path is the one to use"
         )
-    if dropped and on_notice:
-        on_notice(f"skipped {len(dropped)} unparseable tab op(s): {', '.join(dropped)}")
+    if skipped and on_notice:
+        on_notice(f"skipped {len(skipped)} tab(s) the API gave no id for: "
+                  f"{', '.join(skipped)}")
 
+    flat = list(walk_tab_refs(refs))
     exports: dict[str, str] = {}
-    for n, ref in enumerate(refs, start=1):
+    for n, ref in enumerate(flat, start=1):
         if n > 1:
             sleep(delay)
         exports[ref.tab_id] = api.export_tab_markdown(doc_id, ref.tab_id)
         if on_progress:
-            on_progress(ref, n, len(refs))
+            on_progress(ref, n, len(flat))
 
-    validate_tab_exports(exports, refs)
+    validate_tab_exports(exports, flat)
 
-    tabs = [_tab_from_markdown(ref, exports[ref.tab_id], doc_id) for ref in refs]
+    tabs = [_tab_from_markdown(ref, exports, doc_id) for ref in refs]
 
     meta = api.get_document_metadata(doc_id)
     document = Document(
@@ -116,17 +123,21 @@ def build_per_tab_document(
     return anchor_comments(document)
 
 
-def _tab_from_markdown(ref: TabRef, markdown: str, doc_id: str) -> Tab:
-    """Parse one tab's exported markdown into a Tab node.
+def _tab_from_markdown(ref: TabRef, exports: dict[str, str], doc_id: str) -> Tab:
+    """Parse one tab's exported markdown into a Tab node, children and all.
 
     build_from_google_md returns a whole Document with a single placeholder
     tab; we keep its blocks and restore the tab's real identity. The `t-`
-    prefix matches from_docs_json's convention (kix/enrich strips it again).
-
-    Always level=0 with no parent/children: we have no confirmed op shape
-    for child tabs in the /edit payload, so nesting is flattened rather than
-    guessed at. `gdoc pull` surfaces this in its degraded-fidelity warning.
+    prefix matches from_docs_json's convention (kix/enrich strips it again),
+    and applies to parent ids too so the two pull paths agree.
     """
-    parsed = build_from_google_md(markdown, doc_id=doc_id)
+    parsed = build_from_google_md(exports[ref.tab_id], doc_id=doc_id)
     blocks = parsed.tabs[0].blocks if parsed.tabs else []
-    return Tab(tab_id="t-" + ref.tab_id, title=ref.title, level=0, blocks=blocks)
+    return Tab(
+        tab_id="t-" + ref.tab_id,
+        title=ref.title,
+        level=ref.level,
+        parent_tab_id="t-" + ref.parent_tab_id if ref.parent_tab_id else None,
+        children=[_tab_from_markdown(c, exports, doc_id) for c in ref.children],
+        blocks=blocks,
+    )
