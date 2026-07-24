@@ -144,3 +144,47 @@ live FOC doc before this is called done.
 
 Recovering suggestions or stable paragraph IDs for these documents. Google does
 not expose them at any granularity once the bulk call fails.
+
+## Addendum (2026-07-23): tab enumeration moved off the `/edit` scraper
+
+Everything above shipped, then two follow-up commits changed how the tab list
+is recovered. The prose above is left intact as the record of the original
+reasoning; this section corrects it.
+
+**A field mask *does* dodge the 500.** The probe table near the top reports
+`includeTabsContent=true&fields=tabs/tabProperties` still returning 500, and
+concludes the mask cannot help because the server assembles the whole document
+before masking. That conclusion was wrong. Masking to the tab *tree* rather
+than a single property —
+
+    tabs(tabProperties,childTabs(tabProperties,childTabs(...)))
+
+— returns the tab list through the public API and never triggers the
+content-assembly 500. It is also markedly cheaper than the unmasked call: 7.2s
+against 18.9s on a 13.5 MB, 57-tab document. The original probe most likely
+failed on mask *shape*, not on the principle; the corrected shape selects only
+tab properties and the nested `childTabs` structure, no body content.
+
+**Consequences.** The reverse-engineered `/edit` `ac`-op scraper
+(`parse_tab_refs` over the editor payload) is gone, and with it the whole
+"Resolved: `t.0` is an alias" analysis — that was an artifact of the scraping
+route. Enumeration is now a masked `documents.get`, which carries the real tab
+tree, so **child tabs survive with their nesting**. The scraper had no
+confirmed op shape for child tabs and returned every tab at `level=0`; the mask
+gives a tree whose emitted structure matches the ordinary pull path. This
+retires the "nested tabs are flattened" caveat that the first cut only
+documented rather than fixed.
+
+**A safeguard had to relax.** `validate_tab_exports` aborts when two tabs export
+identical bytes, on the theory that the export endpoint answers an unrecognised
+tab id with the default tab's content. Once child tabs are enumerated, a parent
+tab that holds only child tabs has no body of its own and exports as empty — and
+all empty exports hash alike, so a document with two such tabs aborted the pull.
+Empty exports were never evidence of the silent-fallback failure that safeguard
+guards against (that failure returns the *default tab's* content, which is not
+empty), so empty exports are now exempted from the collision check. A live
+11-tab document with five body-less parent tabs drove this.
+
+Both changes were verified end-to-end against live documents with two levels of
+nesting. See commits `1ae0a59` (masked enumeration) and `a0bb9b3` (empty-tab
+exemption).
